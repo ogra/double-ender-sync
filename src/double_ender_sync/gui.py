@@ -54,7 +54,7 @@ class DropListWidget(QListWidget):
             event.ignore()
 
     def dropEvent(self, event) -> None:  # type: ignore[override]
-        for file_path in extract_wav_paths(event.mimeData()):
+        for file_path in extract_audio_paths(event.mimeData()):
             if not _contains_item(self, file_path):
                 self.addItem(file_path)
         event.acceptProposedAction()
@@ -64,11 +64,15 @@ def _mime_has_files(mime_data: QMimeData) -> bool:
     return mime_data.hasUrls()
 
 
-def extract_wav_paths(mime_data: QMimeData) -> list[str]:
+SUPPORTED_AUDIO_SUFFIXES = {".wav", ".aiff", ".aif"}
+SUPPORTED_AUDIO_FILTER = "Audio Files (" + " ".join(f"*{suffix}" for suffix in sorted(SUPPORTED_AUDIO_SUFFIXES)) + ")"
+
+
+def extract_audio_paths(mime_data: QMimeData) -> list[str]:
     paths: list[str] = []
     for url in mime_data.urls():
         path = Path(url.toLocalFile())
-        if path.is_file() and path.suffix.lower() == ".wav":
+        if path.is_file() and path.suffix.lower() in SUPPORTED_AUDIO_SUFFIXES:
             paths.append(str(path))
     return paths
 
@@ -224,12 +228,12 @@ class MainWindow(QMainWindow):
         widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
     def select_master(self) -> None:
-        file_path, _ = QFileDialog.getOpenFileName(self, self.t("gui.dialog.select_master"), filter="WAV Files (*.wav)")
+        file_path, _ = QFileDialog.getOpenFileName(self, self.t("gui.dialog.select_master"), filter=SUPPORTED_AUDIO_FILTER)
         if file_path:
             self.master_input.setText(file_path)
 
     def select_tracks(self) -> None:
-        file_paths, _ = QFileDialog.getOpenFileNames(self, self.t("gui.dialog.select_tracks"), filter="WAV Files (*.wav)")
+        file_paths, _ = QFileDialog.getOpenFileNames(self, self.t("gui.dialog.select_tracks"), filter=SUPPORTED_AUDIO_FILTER)
         for file_path in file_paths:
             if not _contains_item(self.track_list, file_path):
                 self.track_list.addItem(QListWidgetItem(file_path))

@@ -3,10 +3,11 @@ from pathlib import Path
 
 pytest.importorskip("PySide6")
 
+from PySide6.QtCore import QMimeData, QUrl
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from double_ender_sync.api import AlignmentOptions
-from double_ender_sync.gui import MainWindow
+from double_ender_sync.gui import MainWindow, extract_audio_paths
 
 
 def _app() -> QApplication:
@@ -109,3 +110,22 @@ def test_open_output_directory_shows_error_when_open_fails(monkeypatch, tmp_path
 
     assert len(errors) == 1
     assert str(tmp_path) in errors[0]
+
+
+def test_extract_audio_paths_accepts_wav_and_aiff(tmp_path) -> None:
+    wav = tmp_path / "a.wav"
+    aiff = tmp_path / "b.aiff"
+    aif = tmp_path / "c.aif"
+    txt = tmp_path / "d.txt"
+    for path in (wav, aiff, aif, txt):
+        path.write_text("x")
+
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(wav)), QUrl.fromLocalFile(str(aiff)), QUrl.fromLocalFile(str(aif)), QUrl.fromLocalFile(str(txt))])
+
+    paths = extract_audio_paths(mime)
+
+    assert str(wav) in paths
+    assert str(aiff) in paths
+    assert str(aif) in paths
+    assert str(txt) not in paths

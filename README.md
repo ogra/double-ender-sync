@@ -30,6 +30,33 @@ offset_seconds = master_time - local_time
 - Python 3.11+
 - WAV input files for master and local tracks
 
+### Recommended install flow (important)
+
+Start with the **core CLI only** and add extras only when needed:
+
+```bash
+pip install double-ender-sync
+```
+
+- Core install includes CLI alignment pipeline (default `resample` stretch) and excludes GUI / pitch-preserving dependencies.
+- Add GUI only when you need desktop operation:
+
+```bash
+pip install "double-ender-sync[gui]"
+```
+
+- Add pitch-preserving stretch support only when needed:
+
+```bash
+pip install "double-ender-sync[stretch]"
+```
+
+- Install everything (GUI + stretch + dev-oriented extras) only if you explicitly want full feature/development setup:
+
+```bash
+pip install "double-ender-sync[all]"
+```
+
 ### From source
 
 ```bash
@@ -50,8 +77,11 @@ Run tests:
 ```bash
 pip install -e ".[dev]"
 pytest
+```
 
-# for pitch-preserving stretch option
+If you need pitch-preserving stretch during development, install it explicitly:
+
+```bash
 pip install -e ".[stretch]"
 ```
 
@@ -122,7 +152,7 @@ Use `double-ender-sync --help` for the full option list.
 
 This project also provides an optional desktop GUI built with PySide6.
 
-Install with GUI dependency:
+Install with GUI dependency (required for `double-ender-sync-gui`):
 
 ```bash
 pip install -e ".[gui]"

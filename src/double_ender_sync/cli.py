@@ -218,7 +218,7 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
                         stretch_method=args.stretch_method,
                     )
                 except RuntimeError as exc:
-                    print(f'error: {exc}. Install optional dependency with: pip install -e ".[stretch]"', file=sys.stderr)
+                    print(f'error: {exc}', file=sys.stderr)
                     LOGGER.exception("Global correction failed")
                     return EXIT_RUNTIME_ERROR
                 LOGGER.debug(

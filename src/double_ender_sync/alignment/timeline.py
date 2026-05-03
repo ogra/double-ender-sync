@@ -89,7 +89,9 @@ def _pitch_preserving_time_stretch(samples: np.ndarray, stretch_ratio: float) ->
     try:
         librosa = importlib.import_module("librosa")
     except ModuleNotFoundError as exc:
-        raise RuntimeError("pitch_preserving stretch requires librosa. Install with: pip install librosa") from exc
+        raise RuntimeError(
+            "pitch_preserving stretch requires librosa. Install with: pip install \"double-ender-sync[stretch]\""
+        ) from exc
     rate = 1.0 / stretch_ratio
     stretched = librosa.effects.time_stretch(samples.astype(np.float32, copy=False), rate=rate)
 

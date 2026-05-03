@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "double-ender-sync"
+version = "0.1.0"
+description = "Double-ender time alignment engine for podcast production"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Toshiyuki Ogura" }]
+license-files = ["LICENSE"]
+keywords = ["podcast", "double-ender", "audio", "alignment", "sync"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: End Users/Desktop",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Multimedia :: Sound/Audio",
+]
+dependencies = [
+  "numpy>=1.26,<2",
+  "scipy>=1.11",
+  "soundfile>=0.12",
+  "librosa>=0.10",
+  "pytest",
+  "PySide6>=6.7",
+]
+
+[project.optional-dependencies]
+stretch = [
+  "librosa>=0.10",
+]
+dev = [
+  "pytest",
+  "PySide6>=6.7",
+]
+gui = [
+  "PySide6>=6.7",
+]
+all = [
+  "librosa>=0.10",
+  "pytest",
+  "PySide6>=6.7",
+]
+
+[project.scripts]
+double-ender-sync = "double_ender_sync.cli:main"
+double-ender-sync-gui = "double_ender_sync.gui:main"
+double-ender-sync-validate-locales = "double_ender_sync.i18n.validate:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"double_ender_sync.i18n.locales" = ["*.json"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+addopts = "-q"

@@ -1,0 +1,22 @@
+{
+    "recommendations": [
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "streetsidesoftware.code-spell-checker",
+        "ms-vscode.vscode-node-azure-pack",
+        "ms-vscode-remote.remote-containers",
+        "github.vscode-github-actions",
+        "github.copilot-chat",
+        "github.vscode-pull-request-github",
+        "anthropic.claude-code",
+        "openai.chatgpt",
+        "google.gemini-cli-vscode-ide-companion",
+        "google.geminicodeassist",
+        "fill-labs.dependi",
+        "golang.go",
+        "ms-python.python",
+        "ms-python.debugpy",
+        "ms-python.vscode-pylance",
+        "editorconfig.editorconfig"
+    ]
+}

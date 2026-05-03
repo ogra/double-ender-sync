@@ -1,0 +1,18 @@
+title = "Project gitleaks config"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Test fixtures and example keys"
+
+# Enumerate known sample keys in plain text (this is the most reliable)
+regexes = [
+  '''AKIAIOSFODNN7EXAMPLE''',
+  '''wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY''',
+]
+# Exclude entire test fixtures directory
+paths = [
+  '''(.*?)tests/fixtures/.*''',
+  '''(.*?)\.env\.example$''',
+]

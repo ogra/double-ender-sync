@@ -1,0 +1,49 @@
+# top-most EditorConfig file
+root = true
+
+# Unix-style newlines with a newline ending every file
+[*]
+end_of_line = lf
+insert_final_newline = true
+
+# Matches multiple files with brace expansion notation
+# Set default charset
+[*.{go,js,json,py,ts}]
+charset = utf-8
+
+# 4 space indentation
+[*.py]
+indent_style = space
+indent_size = 4
+
+# Tab indentation (no size specified)
+[Makefile]
+indent_style = tab
+
+# Indentation override for all JS/TS under lib directory
+[lib/**.{js,ts}]
+indent_style = space
+indent_size = 2
+
+# Matches the exact files either package.json or .travis.yml
+[{package.json,.travis.yml,tsconfig.json}]
+indent_style = space
+indent_size = 2
+
+# Typescript and JSON files in src and scripts directories
+[{src,scripts,tests}/**.{ts,json,js}]
+end_of_line = crlf
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+# HTML
+[*.html]
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# CSS
+[*.css]
+indent_style = space
+indent_size = 4

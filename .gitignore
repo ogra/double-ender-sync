@@ -1,0 +1,36 @@
+node_modules/
+dist/
+build/
+.venv/
+.env
+.env.keys
+.env.local
+.DS_Store
+*.log
+*.cache
+*.tmp
+__pycache__/
+*.egg-info/
+
+# Audio inputs/outputs
+input/
+output/
+*.wav
+*.aiff
+*.aif
+*.flac
+*.mp3
+*.m4a
+
+# Analysis / temporary artifacts
+*.npy
+*.npz
+*.bin
+sync-report.json
+sync-markers.csv
+warnings.txt
+
+# Test/cache
+.pytest_cache/
+.coverage
+htmlcov/

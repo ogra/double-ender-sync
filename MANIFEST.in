@@ -1,0 +1,32 @@
+include README.md
+include LICENSE
+include THIRD_PARTY_NOTICES.md
+
+# package source
+graft src
+
+# exclude development/editor/agent metadata
+prune .devcontainer
+prune .vscode
+exclude .editorconfig
+exclude .gitleaks.toml
+exclude .pre-commit-config.yaml
+exclude AGENTS.md
+exclude CLAUDE.md
+exclude GEMINI.md
+
+# exclude VCS/CI/build/cache artifacts
+prune tests
+prune docs
+prune .git
+prune .github
+prune .venv
+prune venv
+prune dist
+prune build
+prune *.egg-info
+prune .pytest_cache
+prune .mypy_cache
+prune .ruff_cache
+
+global-exclude __pycache__ *.py[cod] .DS_Store *.log

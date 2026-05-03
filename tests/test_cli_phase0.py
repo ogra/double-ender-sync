@@ -1,0 +1,127 @@
+import json
+from pathlib import Path
+
+import numpy as np
+import pytest
+import soundfile as sf
+
+from double_ender_sync.cli import main
+
+
+def _write_tone(path: Path, sample_rate: int, hz: float, duration_seconds: float) -> None:
+    t = np.arange(int(sample_rate * duration_seconds)) / sample_rate
+    samples = (0.2 * np.sin(2 * np.pi * hz * t)).astype(np.float32)
+    sf.write(path, samples, sample_rate)
+
+
+def test_cli_generates_sync_report(tmp_path: Path) -> None:
+    master = tmp_path / "master.wav"
+    track_a = tmp_path / "speaker-a.wav"
+    out_dir = tmp_path / "output"
+
+    _write_tone(master, 48000, 220.0, 0.5)
+    _write_tone(track_a, 44100, 330.0, 0.5)
+
+    exit_code = main([
+        "--master",
+        str(master),
+        "--track",
+        str(track_a),
+        "--out",
+        str(out_dir),
+    ])
+
+    assert exit_code == 0
+    report = json.loads((out_dir / "sync-report.json").read_text(encoding="utf-8"))
+
+    assert report["phase"] == "phase5_reporting"
+    assert report["analysis"]["sample_rate"] == 16000
+    assert report["master"]["sample_rate"] == 48000
+    assert report["tracks"][0]["sample_rate"] == 44100
+    assert (out_dir / "sync-markers.csv").exists()
+    assert (out_dir / "warnings.txt").exists()
+
+
+
+def test_cli_reports_phase2_fields(tmp_path: Path) -> None:
+    master = tmp_path / "master.wav"
+    track_a = tmp_path / "speaker-a.wav"
+    out_dir = tmp_path / "output"
+
+    _write_tone(master, 16000, 220.0, 1.0)
+    _write_tone(track_a, 16000, 220.0, 1.0)
+
+    exit_code = main(["--master", str(master), "--track", str(track_a), "--out", str(out_dir)])
+    assert exit_code == 0
+
+    report = json.loads((out_dir / "sync-report.json").read_text(encoding="utf-8"))
+    track_report = report["tracks"][0]
+    assert "speech_segments" in track_report
+    assert "anchor_candidates" in track_report
+    assert "initial_offset" in track_report
+    assert "drift_anchor_matches" in track_report
+    assert "drift_estimate" in track_report
+    assert "global_correction" in track_report
+
+
+def test_cli_writes_debug_log_file(tmp_path: Path) -> None:
+    master = tmp_path / "master.wav"
+    track_a = tmp_path / "speaker-a.wav"
+    out_dir = tmp_path / "output"
+
+    _write_tone(master, 16000, 220.0, 1.0)
+    _write_tone(track_a, 16000, 220.0, 1.0)
+
+    exit_code = main([
+        "--master", str(master),
+        "--track", str(track_a),
+        "--out", str(out_dir),
+        "--debug",
+    ])
+    assert exit_code == 0
+
+    log_file = out_dir / "double-ender-sync.log"
+    assert log_file.exists()
+    contents = log_file.read_text(encoding="utf-8")
+    assert "Starting alignment run" in contents
+    assert "anchor_candidates" in contents
+
+
+
+def test_cli_prints_progress_and_eta(tmp_path: Path, capsys) -> None:
+    master = tmp_path / "master.wav"
+    track_a = tmp_path / "speaker-a.wav"
+    out_dir = tmp_path / "output"
+
+    _write_tone(master, 16000, 220.0, 1.0)
+    _write_tone(track_a, 16000, 220.0, 1.0)
+
+    exit_code = main(["--master", str(master), "--track", str(track_a), "--out", str(out_dir)])
+    assert exit_code == 0
+
+    captured = capsys.readouterr()
+    assert "[progress]" in captured.out
+    assert "ETA" in captured.out
+
+
+def test_cli_help_includes_normalize_output(capsys) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--help"])
+
+    assert exc_info.value.code == 0
+    captured = capsys.readouterr()
+    assert "--normalize-output" in captured.out
+    assert "--stretch-ratio-warning-threshold" in captured.out
+    assert "--stretch-method" in captured.out
+    assert "--stretch-ratio-auto-continue" in captured.out
+
+
+def test_cli_rejects_negative_stretch_ratio_threshold(tmp_path: Path) -> None:
+    master = tmp_path / "master.wav"
+    track_a = tmp_path / "speaker-a.wav"
+    out_dir = tmp_path / "output"
+    _write_tone(master, 16000, 220.0, 0.5)
+    _write_tone(track_a, 16000, 220.0, 0.5)
+
+    exit_code = main(["--master", str(master), "--track", str(track_a), "--out", str(out_dir), "--stretch-ratio-warning-threshold", "-0.1"])
+    assert exit_code == 2

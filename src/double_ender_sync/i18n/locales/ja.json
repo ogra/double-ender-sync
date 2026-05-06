@@ -11,6 +11,12 @@
   "gui.use_pitch_preserving": "ピッチ保持グローバル伸縮を使用（librosa）",
   "gui.analysis_sample_rate": "解析サンプルレート",
   "gui.stretch_threshold": "ストレッチ比率の警告しきい値",
+  "gui.vad_strategy": "VAD 戦略",
+  "gui.vad_strategy.adaptive_rms": "適応 RMS（既定）",
+  "gui.vad_strategy.rms": "RMS しきい値",
+  "gui.vad_strategy.silero": "Silero VAD（機械学習）",
+  "gui.vad_strategy.webrtc": "WebRTC VAD",
+  "gui.vad_strategy.pyannote": "pyannote（vad-pyannoteが必要）",
   "gui.advanced_settings": "詳細設定",
   "gui.run_alignment": "アライメント実行",
   "gui.log_placeholder": "実行ログがここに表示されます。",
@@ -42,5 +48,6 @@
   "gui.current_task_idle": "現在のタスク: 待機中",
   "gui.current_task_starting": "現在のタスク: 開始中...",
   "gui.current_task": "現在のタスク: {task}",
-  "gui.current_task_done": "現在のタスク: 完了"
+  "gui.current_task_done": "現在のタスク: 完了",
+  "gui.pyannote_model": "pyannoteモデル/パイプライン"
 }

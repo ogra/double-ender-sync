@@ -51,6 +51,28 @@ pip install "double-ender-sync[gui]"
 pip install "double-ender-sync[stretch]"
 ```
 
+- Add ML-VAD runtime dependencies for lightweight ML backends (`silero` / `webrtc`):
+
+```bash
+pip install "double-ender-sync[vad-ml]"
+```
+
+- Add the dedicated pyannote stack only when you need `--vad-strategy pyannote`:
+
+```bash
+pip install "double-ender-sync[vad-pyannote]"
+```
+
+> Note: as of 2026-05-06, the pyannote extra targets the current Python 3.14-compatible stack verified by `python -m pip index versions`: `pyannote.audio>=4.0.4,<5`, `torch==2.11.0`, `torchaudio==2.11.0`, and `torchcodec>=0.11.1,<0.12`. `pyannote.audio` pulls in `pyannote-core>=6.0.1` and therefore requires `numpy>=2.0`; the core package allows NumPy 1.26 or newer, so installing the pyannote or all extras may upgrade an existing environment to NumPy 2.x. The project does not call `torchaudio.load` directly; for `--vad-strategy pyannote`, it passes an in-memory Torch waveform into pyannote so pyannote does not decode temporary audio files through its legacy torchaudio-backed file I/O path. By default, the pyannote backend loads `pyannote/speaker-diarization-community-1`, which is a gated Hugging Face pipeline requiring accepted terms and a token. You can override the model/pipeline with `--pyannote-model`; `pyannote/segmentation-3.0` keeps using the verified segmentation-model VAD loader, and `pyannote/voice-activity-detection` remains available as an explicit legacy pipeline. PyTorch 2.6+ defaults checkpoint loads to `weights_only=True`; the pyannote backend retries only that known checkpoint-compatibility failure with `weights_only=False`, so use `pyannote` only with model checkpoints you trust. With pyannote.audio 4.0.4 and the default community pipeline, this retry path is not expected during normal loading; it is retained for explicitly selected legacy checkpoints. See `docs/pyannote-vad-modernization-plan.md` for the executable modernization subtasks.
+>
+> **macOS (Homebrew) runtime caveat for pyannote/torio**: some environments only succeed with FFmpeg 6 libraries (not the latest FFmpeg 8.x keg). If you see `libtorio_ffmpeg*.so` load failures or `Library not loaded: @rpath/libavutil.*.dylib`, install `ffmpeg@6` and point dynamic loading to it before running the CLI:
+>
+> ```bash
+> brew install ffmpeg@6
+> export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@6)/lib:${DYLD_LIBRARY_PATH:-}"
+> double-ender-sync ... --vad-strategy pyannote
+> ```
+
 - Install everything (GUI + stretch + dev-oriented extras) only if you explicitly want full feature/development setup:
 
 ```bash
@@ -143,10 +165,45 @@ output/
   Global correction method. `resample` is default. `pitch_preserving` uses librosa and prioritizes pitch stability for larger drift corrections.
 - `--debug`  
   Enable debug logging to identify which stage is running when resource usage spikes.
+- `--vad-strategy {silero,adaptive_rms,rms,webrtc,pyannote}`  
+  Select VAD backend strategy. Default is `adaptive_rms`. Current implementation behavior:
+  - `silero`: requires `vad-ml` extra; if missing, the command fails with an explicit error.
+  - `adaptive_rms`: adaptive thresholding (`noise_floor + k*MAD`) for low-cost robustness.
+  - `rms`: fixed-threshold baseline.
+  - `webrtc`: requires `vad-ml` extra; if missing, the command fails with an explicit error.
+  - `pyannote`: requires `vad-pyannote` extra (plus pyannote runtime/model access); if unavailable, the command fails with an explicit error.
+    - Default pyannote model/pipeline is `pyannote/speaker-diarization-community-1`. The alignment engine ignores diarization speaker labels and uses the union of detected speech regions as VAD segments for anchor selection. This model is gated on Hugging Face and its pipeline config requires pyannote.audio 4.x, so accept the model terms, provide `HF_TOKEN` or `HUGGINGFACE_HUB_TOKEN`, and upgrade the pyannote extra if an older 3.x environment was already installed.
+    - Override with `--pyannote-model <id>` only when `--vad-strategy pyannote` is selected. Passing `--pyannote-model` with a non-pyannote strategy is a usage error, not a silent no-op.
+    - `--pyannote-model pyannote/segmentation-3.0` uses the existing segmentation-model loader (`Model.from_pretrained` + `VoiceActivityDetection`) with conservative 100 ms `min_duration_on` / `min_duration_off` smoothing for anchor selection. This verified path remains available for explicit selection.
+    - For gated/private models, set `HF_TOKEN` (or `HUGGINGFACE_HUB_TOKEN`) and accept model terms for the selected model at `https://hf.co/<model-id>`.
+- `--pyannote-model <model-id>`
+  Select the pyannote model/pipeline id. Only valid with `--vad-strategy pyannote`. The default is `pyannote/speaker-diarization-community-1`; pass `--pyannote-model pyannote/segmentation-3.0` to use the verified segmentation-model VAD path, or `--pyannote-model pyannote/voice-activity-detection` to reproduce the legacy pipeline behavior.
 - `--log-file output/debug.log`  
   Write logs to a specific file path (default: `output/double-ender-sync.log`).
 
 Use `double-ender-sync --help` for the full option list.
+
+### VAD strategy selection guide (recommended trial order)
+
+If you are unsure which `--vad-strategy` to use, try them in this order:
+
+1. `adaptive_rms` (default)
+   - Best first try for most environments: no extra ML runtime, low setup cost, and robust enough for many podcast recordings.
+2. `rms`
+   - Simple fixed-threshold baseline. Useful as a quick comparison when `adaptive_rms` seems too strict/too loose for your material.
+3. `webrtc`
+   - Lightweight ML-style VAD option after installing ML extras (`pip install "double-ender-sync[vad-ml]"` for PyPI installs, or `pip install -e ".[vad-ml]"` for source/editable installs). Good next step when RMS-based detection struggles with noise/silence boundaries.
+4. `silero`
+   - Typically stronger speech/non-speech discrimination than simple energy thresholds, but requires the same optional ML extras install shown above.
+5. `pyannote`
+   - Most heavyweight option (dependency/runtime/model requirements are larger). Install `vad-pyannote` for this backend; try this last when other strategies still produce low-confidence anchors. The pyannote default is now `pyannote/speaker-diarization-community-1` to benefit from newer diarization improvements; keep comparing reports and boundary spot-checks, and use `--pyannote-model pyannote/segmentation-3.0` or `--pyannote-model pyannote/voice-activity-detection` when you need those explicit paths.
+
+Suggested workflow:
+
+- First run with defaults (`adaptive_rms`) and inspect `sync-report.json` / `warnings.txt`.
+- If warnings indicate low anchor confidence or poor residuals, retry with the next strategy in the list.
+- Keep the report from each run and compare `anchor_count`, `residual_median_ms`, and `residual_max_ms` to choose the safest result.
+- To compare the same private audio across the built-in trial set without committing audio, run `python scripts/compare-vad-strategies.py --master input/master.wav --track input/speaker-a.wav --out output/vad-comparison`. The summary file compares anchor counts, residuals, warning counts, and warning severities for `adaptive_rms`, `silero`, default community pyannote, legacy pyannote, and `pyannote/segmentation-3.0`; manually spot-check speech boundaries around selected anchors before changing recommendations.
 
 ### GUI (PySide6, drag & drop)
 
@@ -190,6 +247,58 @@ GUI features (current):
 - Run the same alignment pipeline as CLI
 
 
+
+
+## Runtime troubleshooting (pyannote + FFmpeg)
+
+When `--vad-strategy pyannote` is enabled, runtime loading depends on Torch waveform support and PyTorch checkpoint compatibility. The normal VAD path passes audio as an in-memory waveform, avoiding pyannote's file-decoding path that can emit torchaudio deprecation warnings during the PyTorch TorchCodec transition.
+
+- TorchCodec/FFmpeg native bindings may still be needed by pyannote itself or by user-selected pyannote pipelines that perform their own file decoding.
+- Keep `torch`, `torchaudio`, and `torchcodec` on a compatible set. The pyannote extra pins `torch==2.11.0` and `torchaudio==2.11.0`, so it also constrains TorchCodec to `>=0.11.1,<0.12`. If `pip` previously installed an incompatible TorchCodec, reinstall the extra or run `pip install --force-reinstall "torchcodec>=0.11.1,<0.12"`. A `Symbol not found` error from `libtorchcodec_core*.dylib` that references `torch/lib/libc10.dylib` usually points to this Torch/TorchCodec ABI mismatch rather than to the selected FFmpeg keg.
+- On **macOS**, Torch/Torio may try FFmpeg major versions in descending order and can fail on incompatible majors and succeed on 6.
+- Homebrew latest FFmpeg is currently 8.x, but that does not guarantee ABI compatibility with prebuilt Python extensions in your environment.
+- In that case, install `ffmpeg@6` in parallel and expose its library directory via `DYLD_LIBRARY_PATH`. If the error persists after FFmpeg 6 loads successfully, check the TorchCodec version compatibility before changing FFmpeg paths again.
+- If logs mention `models--pyannote--segmentation`, that can be an internal segmentation dependency of the selected pyannote pipeline rather than an explicit CLI model switch. The selected pyannote model is logged and written under `analysis.vad.pyannote_model` in `sync-report.json`.
+- If the default `pyannote/speaker-diarization-community-1` model fails with an error such as `SpeakerDiarization.__init__() got an unexpected keyword argument 'plda'`, the installed pyannote.audio runtime is too old for the community-1 pipeline config. Upgrade with `pip install -U "double-ender-sync[vad-pyannote]"`, or explicitly choose `--pyannote-model pyannote/segmentation-3.0` while you keep the older runtime.
+- If PyTorch reports `Weights only load failed` while loading a pyannote checkpoint, the CLI now retries that specific pyannote pipeline load with `weights_only=False`; this mirrors pre-PyTorch-2.6 behavior and should only be used with trusted pyannote/Hugging Face checkpoints.
+- If the runtime warns with text like `Model was trained with pyannote.audio 0.x` or `Model was trained with torch 1.x`, treat that as a signal to use the default `pyannote/speaker-diarization-community-1` pipeline or compare the explicit `pyannote/segmentation-3.0` loader; do not immediately downgrade the project-wide `torch` or `torchaudio` pins.
+
+For automation, you can set env vars **temporarily from Python** before launching the CLI subprocess (cross-platform pattern):
+
+```python
+import os
+import subprocess
+import sys
+
+env = os.environ.copy()
+
+if sys.platform == "darwin":
+    brew = subprocess.run(["brew", "--prefix", "ffmpeg@6"], capture_output=True, text=True)
+    ffmpeg6_lib = brew.stdout.strip() + "/lib" if brew.returncode == 0 else "/opt/homebrew/opt/ffmpeg@6/lib"
+    env["DYLD_LIBRARY_PATH"] = f"{ffmpeg6_lib}:{env.get('DYLD_LIBRARY_PATH', '')}".rstrip(":")
+elif sys.platform.startswith("linux"):
+    # Set only if you manage a custom FFmpeg location.
+    custom_lib = "/usr/local/lib"
+    env["LD_LIBRARY_PATH"] = f"{custom_lib}:{env.get('LD_LIBRARY_PATH', '')}".rstrip(":")
+
+subprocess.run(
+    [
+        "double-ender-sync",
+        "--master",
+        "input/master.wav",
+        "--track",
+        "input/speaker-a.wav",
+        "--out",
+        "output",
+        "--vad-strategy",
+        "pyannote",
+    ],
+    check=True,
+    env=env,
+)
+```
+
+This keeps the override local to the launched process and avoids permanently mutating user shell configuration.
 
 ## Python API (import from another project)
 
@@ -274,7 +383,7 @@ This tool creates temporary memory-mapped files during analysis to reduce peak R
 Implemented pipeline includes:
 
 1. audio loading and normalization for analysis,
-2. speech-region detection (RMS-based),
+2. speech-region detection (strategy-based: adaptive RMS by default fallback, with ML-ready hooks),
 3. anchor selection and matching against master,
 4. initial offset estimation,
 5. multi-anchor linear drift estimation,

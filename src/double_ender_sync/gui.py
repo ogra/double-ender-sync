@@ -9,6 +9,7 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -30,6 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from double_ender_sync.api import AlignmentOptions, run_alignment
+from double_ender_sync.analysis.vad import DEFAULT_PYANNOTE_MODEL
 from double_ender_sync.cli import EXIT_STRETCH_CONFIRMATION_REQUIRED
 from double_ender_sync.i18n import TranslationCatalog, resolve_language
 from double_ender_sync.i18n.resolver import extract_explicit_lang
@@ -159,6 +161,16 @@ class MainWindow(QMainWindow):
         self.stretch_threshold_input.setSingleStep(0.0005)
         self.stretch_threshold_input.setValue(0.0030)
         self.stretch_threshold_input.setMinimumWidth(140)
+        self.vad_strategy_input = QComboBox()
+        self.vad_strategy_input.addItem(self.t("gui.vad_strategy.adaptive_rms"), "adaptive_rms")
+        self.vad_strategy_input.addItem(self.t("gui.vad_strategy.rms"), "rms")
+        self.vad_strategy_input.addItem(self.t("gui.vad_strategy.silero"), "silero")
+        self.vad_strategy_input.addItem(self.t("gui.vad_strategy.webrtc"), "webrtc")
+        self.vad_strategy_input.addItem(self.t("gui.vad_strategy.pyannote"), "pyannote")
+        self.pyannote_model_input = QLineEdit(DEFAULT_PYANNOTE_MODEL)
+        self.pyannote_model_input.setPlaceholderText(DEFAULT_PYANNOTE_MODEL)
+        self.vad_strategy_input.currentIndexChanged.connect(self._sync_pyannote_model_input_enabled)
+        self._sync_pyannote_model_input_enabled()
 
         layout.addLayout(form_layout)
 
@@ -173,6 +185,8 @@ class MainWindow(QMainWindow):
         advanced_layout.addRow(self.local_adjust_checkbox)
         advanced_layout.addRow(self.pitch_preserving_checkbox)
         advanced_layout.addRow(QLabel(self.t("gui.stretch_threshold")), self.stretch_threshold_input)
+        advanced_layout.addRow(QLabel(self.t("gui.vad_strategy")), self.vad_strategy_input)
+        advanced_layout.addRow(QLabel(self.t("gui.pyannote_model")), self.pyannote_model_input)
 
         advanced_box = QGroupBox(self.t("gui.advanced_settings"))
         advanced_box.setCheckable(True)
@@ -227,6 +241,17 @@ class MainWindow(QMainWindow):
         widget.setMinimumWidth(480)
         widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
+    def _selected_vad_strategy(self) -> str:
+        return str(self.vad_strategy_input.currentData())
+
+    def _selected_pyannote_model(self, vad_strategy: str) -> str:
+        if vad_strategy != "pyannote":
+            return DEFAULT_PYANNOTE_MODEL
+        return self.pyannote_model_input.text().strip() or DEFAULT_PYANNOTE_MODEL
+
+    def _sync_pyannote_model_input_enabled(self, *_args: object) -> None:
+        self.pyannote_model_input.setEnabled(self._selected_vad_strategy() == "pyannote")
+
     def select_master(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(self, self.t("gui.dialog.select_master"), filter=SUPPORTED_AUDIO_FILTER)
         if file_path:
@@ -262,6 +287,7 @@ class MainWindow(QMainWindow):
             self._show_error(self.t("gui.error.output_required"))
             return
 
+        vad_strategy = self._selected_vad_strategy()
         options = AlignmentOptions(
             master=Path(master_path),
             tracks=[Path(track) for track in tracks],
@@ -272,6 +298,8 @@ class MainWindow(QMainWindow):
             stretch_ratio_warning_threshold=float(self.stretch_threshold_input.value()),
             stretch_ratio_auto_continue=False,
             stretch_method="pitch_preserving" if self.pitch_preserving_checkbox.isChecked() else "resample",
+            vad_strategy=vad_strategy,
+            pyannote_model=self._selected_pyannote_model(vad_strategy),
         )
 
         self._reset_progress_state()
@@ -364,11 +392,15 @@ class AlignmentWorker(QObject):
         self.options = options
 
     def run(self) -> None:
-        exit_code = run_alignment(
-            self.options,
-            progress_callback=self._on_progress,
-            event_callback=self._on_event,
-        )
+        try:
+            exit_code = run_alignment(
+                self.options,
+                progress_callback=self._on_progress,
+                event_callback=self._on_event,
+            )
+        except Exception as exc:  # pragma: no cover - GUI runtime guard
+            self.log_line.emit(f"error: {exc}")
+            exit_code = 1
         self.finished.emit(exit_code, self.options)
 
     def _on_progress(self, percent: float, eta_seconds: float, task_message: str) -> None:

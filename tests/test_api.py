@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from double_ender_sync.api import AlignmentOptions, build_cli_argv, run_alignment
+from double_ender_sync.analysis.vad import MODERN_PYANNOTE_SEGMENTATION_MODEL
 
 
 def test_build_cli_argv_includes_required_fields() -> None:
@@ -88,3 +89,78 @@ def test_build_cli_argv_includes_lang_when_set() -> None:
 
     assert "--lang" in argv
     assert "ja" in argv
+
+
+def test_build_cli_argv_includes_vad_strategy() -> None:
+    options = AlignmentOptions(
+        master=Path("input/master.wav"),
+        tracks=[Path("input/speaker-a.wav")],
+        out=Path("output"),
+        vad_strategy="silero",
+    )
+    argv = build_cli_argv(options)
+    assert "--vad-strategy" in argv
+    assert "silero" in argv
+
+
+def test_build_cli_argv_includes_pyannote_vad_strategy() -> None:
+    options = AlignmentOptions(
+        master=Path("input/master.wav"),
+        tracks=[Path("input/speaker-a.wav")],
+        out=Path("output"),
+        vad_strategy="pyannote",
+    )
+    argv = build_cli_argv(options)
+    assert "--vad-strategy" in argv
+    assert "pyannote" in argv
+
+
+def test_build_cli_argv_rejects_invalid_vad_strategy() -> None:
+    options = AlignmentOptions(
+        master=Path("input/master.wav"),
+        tracks=[Path("input/speaker-a.wav")],
+        out=Path("output"),
+        vad_strategy="bad",  # type: ignore[arg-type]
+    )
+    with pytest.raises(ValueError, match="vad_strategy"):
+        build_cli_argv(options)
+
+
+def test_build_cli_argv_accepts_webrtc_vad_strategy() -> None:
+    options = AlignmentOptions(
+        master=Path("input/master.wav"),
+        tracks=[Path("input/speaker-a.wav")],
+        out=Path("output"),
+        vad_strategy="webrtc",
+    )
+    argv = build_cli_argv(options)
+    assert "--vad-strategy" in argv
+    assert "webrtc" in argv
+
+
+def test_build_cli_argv_includes_pyannote_model_for_pyannote_strategy() -> None:
+    options = AlignmentOptions(
+        master=Path("input/master.wav"),
+        tracks=[Path("input/speaker-a.wav")],
+        out=Path("output"),
+        vad_strategy="pyannote",
+        pyannote_model=MODERN_PYANNOTE_SEGMENTATION_MODEL,
+    )
+
+    argv = build_cli_argv(options)
+
+    assert "--pyannote-model" in argv
+    assert MODERN_PYANNOTE_SEGMENTATION_MODEL in argv
+
+
+def test_build_cli_argv_rejects_pyannote_model_for_non_pyannote_strategy() -> None:
+    options = AlignmentOptions(
+        master=Path("input/master.wav"),
+        tracks=[Path("input/speaker-a.wav")],
+        out=Path("output"),
+        vad_strategy="adaptive_rms",
+        pyannote_model=MODERN_PYANNOTE_SEGMENTATION_MODEL,
+    )
+
+    with pytest.raises(ValueError, match="pyannote_model"):
+        build_cli_argv(options)

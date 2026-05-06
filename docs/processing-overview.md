@@ -46,7 +46,7 @@ It also handles argument validation, progress updates, logging, and top-level er
 
 ### Analysis (`analysis/`)
 
-- `vad.py`: RMS energy based speech segment detection.
+- `vad.py`: strategy-based speech segment detection (`silero` / `adaptive_rms` / `rms` / `webrtc`, including optional `pyannote` backend).
 - `anchors.py`: converts speech segments into bounded anchor candidates.
 - `features.py`: normalized feature extraction and fast normalized cross-correlation scoring.
 - `drift.py`: anchor matching around expected positions, outlier rejection, weighted linear drift fit.
@@ -65,17 +65,51 @@ It also handles argument validation, progress updates, logging, and top-level er
 
 ## 3. Core algorithms
 
-## 3.1 Speech detection (RMS VAD)
+## 3.1 Speech detection (pluggable VAD strategies)
 
-`detect_speech_segments()` in `analysis/vad.py` uses short-time RMS energy:
+`detect_speech_segments()` in `analysis/vad.py` dispatches through a `VadStrategy`:
 
-- Frame the mono signal (default 30 ms frame / 10 ms hop)
-- Compute RMS per frame
-- Mark frames as speech if RMS >= threshold (default `0.02`)
-- Merge contiguous speech frames into segments
-- Filter out short segments (default minimum 300 ms)
+- `adaptive_rms` (current robust baseline):
+  - Frame mono signal (default 30 ms frame / 10 ms hop)
+  - Compute frame RMS energy
+  - Estimate noise floor from low percentile
+  - Compute adaptive threshold via `noise_floor + k * MAD`
+  - Merge contiguous speech frames and filter short segments (default minimum 300 ms)
+- `rms`:
+  - Fixed RMS threshold path (default threshold `0.02`)
+- `silero`:
+  - Verifies optional `onnxruntime` installation (`vad-ml` extra)
+  - If dependency/runtime requirements are not met, raises a runtime error (no silent fallback)
+- `webrtc`:
+  - Verifies optional `webrtcvad-wheels` installation (`vad-ml` extra)
+  - Resamples to WebRTC-supported rates as needed and applies frame-based speech decisions
+- `pyannote`:
+  - Verifies optional `pyannote.audio` installation and model/runtime accessibility; the `vad-pyannote` extra targets the current Python 3.14-compatible stack (`pyannote.audio>=4.0.4,<5`, `torch==2.11.0`, `torchaudio==2.11.0`, `torchcodec>=0.11.1,<0.12`).
+  - Accepts a configurable model/pipeline id via `--pyannote-model` / `AlignmentOptions.pyannote_model`; the CLI rejects this option unless `--vad-strategy pyannote` is selected
+  - Default is `pyannote/speaker-diarization-community-1`; diarization speaker labels are ignored and the union of speech regions becomes the VAD timeline. The legacy `pyannote/voice-activity-detection` pipeline remains available through `--pyannote-model pyannote/voice-activity-detection`.
+  - Model identifiers beginning with `pyannote/segmentation` use the compatibility path originally added for pyannote.audio 3.x and still covered under the 4.x stack: `Model.from_pretrained(...)` plus `pyannote.audio.pipelines.VoiceActivityDetection`
+  - The modern segmentation VAD path instantiates explicit 100 ms `min_duration_on` / `min_duration_off` smoothing. These are safe anchor-selection defaults, not final editing cuts.
+  - Runs VAD from an in-memory Torch waveform dictionary so first-party pyannote calls do not need to decode temporary audio files through torchaudio-backed file I/O
+  - Converts timeline speech regions into `SpeechSegment` outputs and records selected VAD metadata in reports
+  - See `scripts/compare-vad-strategies.py` for a repeatable private-audio comparison procedure covering adaptive RMS, Silero, default community pyannote, legacy pyannote, and `pyannote/segmentation-3.0`
 
-This is intentionally simple and deterministic, designed for robust anchor generation rather than linguistic analysis.
+This design keeps call sites stable while allowing ML-backed VAD integration in later phases.
+
+### Practical strategy trial order
+
+For user-facing operation, the safest trial order with the current implementation is:
+
+1. `adaptive_rms` (default): zero extra runtime requirements and generally robust baseline.
+2. `rms`: simplest baseline for quick threshold-behavior comparison.
+3. `webrtc`: optional `vad-ml` dependency; useful when energy-based methods mis-detect noisy regions.
+4. `silero`: optional `vad-ml` dependency; often stronger speech/non-speech separation than plain RMS paths.
+5. `pyannote`: optional heavy backend requiring additional runtime/model setup; reserve for difficult material. The pyannote default is `pyannote/speaker-diarization-community-1`; use explicit `--pyannote-model pyannote/segmentation-3.0` or `--pyannote-model pyannote/voice-activity-detection` when you need to reproduce those verified/legacy paths.
+
+Recommended operator loop:
+
+- Start from default (`adaptive_rms`).
+- If anchor confidence or residual metrics are poor, move to the next strategy.
+- Compare `anchor_count`, `residual_median_ms`, `residual_max_ms`, and warning volume across runs before selecting output for manual editing. The helper `python scripts/compare-vad-strategies.py --master input/master.wav --track input/speaker-a.wav --out output/vad-comparison` creates per-strategy reports and a compact JSON summary without requiring private audio in the repository.
 
 ## 3.2 Anchor candidate selection
 

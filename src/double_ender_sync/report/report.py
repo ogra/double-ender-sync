@@ -17,6 +17,7 @@ def build_phase5_report(
     analysis_sample_rate: int,
     track_details: dict[str, dict],
     language: str | None = None,
+    vad_metadata: dict | None = None,
 ) -> dict:
     resolved_language = resolve_language(explicit_lang=language)
     catalog = TranslationCatalog(resolved_language)
@@ -33,7 +34,7 @@ def build_phase5_report(
 
     return {
         "phase": "phase5_reporting",
-        "analysis": {"sample_rate": analysis_sample_rate, "channels": "mono", "dtype": "float32", "language": resolved_language},
+        "analysis": {"sample_rate": analysis_sample_rate, "channels": "mono", "dtype": "float32", "language": resolved_language, "vad": vad_metadata or {}},
         "master": _track_metadata(master),
         "tracks": report_tracks,
         "warnings": global_warnings,

@@ -55,5 +55,8 @@
     },
     "[toml]": {
         "editor.defaultFormatter": "tombi-toml.tombi"
+    },
+    "[shellscript]": {
+        "editor.defaultFormatter": "mads-hartmann.bash-ide-vscode"
     }
 }

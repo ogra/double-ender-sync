@@ -11,6 +11,12 @@
   "gui.use_pitch_preserving": "Use pitch-preserving global stretch (librosa)",
   "gui.analysis_sample_rate": "Analysis sample rate",
   "gui.stretch_threshold": "Stretch ratio warning threshold",
+  "gui.vad_strategy": "VAD strategy",
+  "gui.vad_strategy.adaptive_rms": "Adaptive RMS (default)",
+  "gui.vad_strategy.rms": "RMS threshold",
+  "gui.vad_strategy.silero": "Silero VAD (ML)",
+  "gui.vad_strategy.webrtc": "WebRTC VAD",
+  "gui.vad_strategy.pyannote": "pyannote (requires vad-pyannote)",
   "gui.advanced_settings": "Advanced settings",
   "gui.run_alignment": "Run alignment",
   "gui.log_placeholder": "Execution log appears here.",
@@ -42,5 +48,6 @@
   "gui.current_task_idle": "Current task: idle",
   "gui.current_task_starting": "Current task: starting...",
   "gui.current_task": "Current task: {task}",
-  "gui.current_task_done": "Current task: completed"
+  "gui.current_task_done": "Current task: completed",
+  "gui.pyannote_model": "pyannote model/pipeline"
 }

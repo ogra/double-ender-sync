@@ -11,6 +11,8 @@ build/
 *.tmp
 __pycache__/
 *.egg-info/
+mise.local.toml
+uv.lock
 
 # Audio inputs/outputs
 input/

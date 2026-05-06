@@ -7,7 +7,7 @@ from pathlib import Path
 from double_ender_sync.alignment.offset import estimate_initial_offset
 from double_ender_sync.analysis.anchors import select_anchor_candidates
 from double_ender_sync.analysis.drift import fit_linear_drift_model, match_anchors_for_drift
-from double_ender_sync.analysis.vad import detect_speech_segments
+from double_ender_sync.analysis.vad import DEFAULT_PYANNOTE_MODEL, build_vad_strategy, detect_speech_segments
 from double_ender_sync.audio.io import AudioLoadError, cleanup_temp_files, load_audio_track
 from double_ender_sync.audio.render import write_synced_track
 from double_ender_sync.alignment.timeline import apply_global_time_correction
@@ -69,6 +69,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--local-adjust-enabled", action="store_true", help="Enable optional phase-4 local adjustment")
     parser.add_argument("--local-adjust-threshold-ms", type=float, default=80.0, help="Residual threshold in ms for local adjustment")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging for pipeline and memory checkpoints")
+    parser.add_argument("--vad-strategy", choices=["silero", "adaptive_rms", "rms", "webrtc", "pyannote"], default="adaptive_rms", help="VAD backend strategy")
+    parser.add_argument("--pyannote-model", default=None, help=f"pyannote model/pipeline id when --vad-strategy pyannote is selected (default: {DEFAULT_PYANNOTE_MODEL})")
     parser.add_argument("--stretch-ratio-warning-threshold", type=float, default=0.003, help="Warn when abs(stretch_ratio-1.0) exceeds this value")
     parser.add_argument("--stretch-ratio-auto-continue", action="store_true", help="Continue automatically when stretch ratio warning threshold is exceeded")
     parser.add_argument("--stretch-method", choices=["resample", "pitch_preserving"], default="resample", help="Global time correction method")
@@ -111,6 +113,12 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
     if args.stretch_ratio_warning_threshold < 0:
         print("error: --stretch-ratio-warning-threshold must be >= 0", file=sys.stderr)
         return EXIT_USAGE_ERROR
+    selected_pyannote_model = args.pyannote_model or DEFAULT_PYANNOTE_MODEL
+    if args.pyannote_model is not None and args.vad_strategy != "pyannote":
+        print("error: --pyannote-model is only valid when --vad-strategy pyannote is selected", file=sys.stderr)
+        return EXIT_USAGE_ERROR
+    if args.vad_strategy == "pyannote":
+        LOGGER.info("Selected pyannote VAD model: %s", selected_pyannote_model)
 
     loaded_tracks = []
     total_tracks = len(args.track)
@@ -139,6 +147,7 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
     processed_tracks = []
     try:
         progress.update(f"Starting processing for {total_tracks} track(s)")
+        vad_strategy = build_vad_strategy(args.vad_strategy, pyannote_model=selected_pyannote_model)
         for track_path in args.track:
             LOGGER.info("Processing track: %s", track_path.name)
             try:
@@ -149,7 +158,7 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
             loaded_tracks.append(track)
             progress.update(f"{track.name}: analysis audio loaded")
 
-            speech_segments = detect_speech_segments(track.analysis_samples, sample_rate=args.analysis_sample_rate)
+            speech_segments = detect_speech_segments(track.analysis_samples, sample_rate=args.analysis_sample_rate, vad_strategy=vad_strategy)
             LOGGER.debug("%s: speech_segments=%d", track.name, len(speech_segments))
             progress.update(f"{track.name}: speech detection completed")
             anchor_candidates = select_anchor_candidates(track.analysis_samples, args.analysis_sample_rate, speech_segments)
@@ -264,6 +273,10 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
                     "stretch_method": args.stretch_method,
                     "stretch_ratio_warning_threshold": args.stretch_ratio_warning_threshold,
                 },
+                "vad": {
+                    "strategy": args.vad_strategy,
+                    "pyannote_model": selected_pyannote_model if args.vad_strategy == "pyannote" else None,
+                },
                 "local_adjustment": None if local_adjustment is None else {
                     "events": [
                         {
@@ -286,6 +299,10 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
             analysis_sample_rate=args.analysis_sample_rate,
             track_details=track_details,
             language=resolved_lang,
+            vad_metadata={
+                "strategy": args.vad_strategy,
+                "pyannote_model": selected_pyannote_model if args.vad_strategy == "pyannote" else None,
+            },
         )
         report_path = write_sync_report(report, args.out)
         markers_path = write_sync_markers_csv(report, args.out)

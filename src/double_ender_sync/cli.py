@@ -5,11 +5,12 @@ import time
 from pathlib import Path
 
 from double_ender_sync.alignment.offset import estimate_initial_offset
-from double_ender_sync.analysis.anchors import select_anchor_candidates
+from double_ender_sync.analysis.anchors import select_anchor_candidates_with_diagnostics
 from double_ender_sync.analysis.drift import fit_linear_drift_model, match_anchors_for_drift
 from double_ender_sync.analysis.vad import DEFAULT_PYANNOTE_MODEL, build_vad_strategy, detect_speech_segments
 from double_ender_sync.audio.io import AudioLoadError, cleanup_temp_files, load_audio_track
 from double_ender_sync.audio.render import write_synced_track
+from double_ender_sync.config import DEFAULT_ANCHOR_SELECTION_CONFIG, AnchorSelectionConfig
 from double_ender_sync.alignment.timeline import apply_global_time_correction
 from double_ender_sync.alignment.local_adjust import apply_local_adjustment
 from double_ender_sync.i18n.resolver import resolve_language
@@ -17,7 +18,9 @@ from double_ender_sync.report.report import (
     build_phase5_report,
     serialize_anchors,
     serialize_anchor_matches,
+    serialize_anchor_selection_diagnostics,
     serialize_drift_estimate,
+    serialize_drift_fit_diagnostics,
     serialize_offset,
     serialize_segments,
     write_sync_markers_csv,
@@ -59,6 +62,17 @@ class ProgressTracker:
             self.progress_callback(percent, eta_seconds, message)
 
 
+def _parse_optional_anchor_count(value: str) -> int | None:
+    if value.lower() in {"none", "unbounded", "unlimited"}:
+        return None
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "must be an integer or one of: none/unbounded/unlimited"
+        ) from exc
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Double-ender sync tool")
     parser.add_argument("--master", required=True, type=Path, help="Master mixed reference WAV file")
@@ -74,9 +88,36 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--stretch-ratio-warning-threshold", type=float, default=0.003, help="Warn when abs(stretch_ratio-1.0) exceeds this value")
     parser.add_argument("--stretch-ratio-auto-continue", action="store_true", help="Continue automatically when stretch ratio warning threshold is exceeded")
     parser.add_argument("--stretch-method", choices=["resample", "pitch_preserving"], default="resample", help="Global time correction method")
+    parser.add_argument("--min-anchor-duration", type=float, default=DEFAULT_ANCHOR_SELECTION_CONFIG.min_anchor_duration_seconds, help="Minimum speech-segment duration in seconds for anchor candidates")
+    parser.add_argument("--base-anchor-duration", type=float, default=None, help=f"Starting anchor duration in seconds before adaptive quality scaling (default: clamp {DEFAULT_ANCHOR_SELECTION_CONFIG.base_anchor_duration_seconds} within min/max bounds)")
+    parser.add_argument("--max-anchor-duration", type=float, default=DEFAULT_ANCHOR_SELECTION_CONFIG.max_anchor_duration_seconds, help="Maximum duration in seconds after adaptive anchor-duration scaling")
+    parser.add_argument("--anchor-density-per-minute", type=float, default=DEFAULT_ANCHOR_SELECTION_CONFIG.anchor_density_per_minute, help="Target selected anchor density per minute before the safety cap is applied")
+    parser.add_argument("--max-anchor-density-per-minute", type=float, default=DEFAULT_ANCHOR_SELECTION_CONFIG.max_anchor_density_per_minute, help="Validation ceiling for --anchor-density-per-minute")
+    parser.add_argument("--min-anchor-count", type=int, default=DEFAULT_ANCHOR_SELECTION_CONFIG.min_anchor_count, help="Minimum target anchor budget for short recordings when enough valid candidates exist")
+    parser.add_argument("--max-anchor-count", type=_parse_optional_anchor_count, default=DEFAULT_ANCHOR_SELECTION_CONFIG.max_anchor_count, help="Safety cap for selected anchor candidates; use 'none' to disable")
+    parser.add_argument("--stratified-bin-count", type=int, default=DEFAULT_ANCHOR_SELECTION_CONFIG.stratified_bin_count, help="Timeline bin count for stratified anchor selection (default: auto)")
+    parser.add_argument("--anchors-per-bin", type=int, default=DEFAULT_ANCHOR_SELECTION_CONFIG.anchors_per_bin, help="Per-bin anchor quota before global budget fill (default: auto)")
+    parser.add_argument("--min-snr-db", type=float, default=DEFAULT_ANCHOR_SELECTION_CONFIG.min_snr_db, help="Reject anchor candidates below this local SNR in dB (default: disabled)")
+    parser.add_argument("--spectral-flatness-threshold", type=float, default=DEFAULT_ANCHOR_SELECTION_CONFIG.spectral_flatness_threshold, help="Reject anchor candidates above this spectral flatness value from 0.0 to 1.0 (default: disabled)")
     parser.add_argument("--log-file", type=Path, default=None, help="Optional log file path (default: <out>/double-ender-sync.log)")
     parser.add_argument("--lang", type=str, default=None, help="UI/report language code (e.g. en, ja). Regional codes like en-US are normalized to en.")
     return parser.parse_args(argv)
+
+
+def _resolve_base_anchor_duration(args: argparse.Namespace) -> float:
+    """Return an effective base duration, preserving max-only CLI tuning.
+
+    When users do not pass ``--base-anchor-duration`` explicitly, keep the
+    default base when possible but clamp it into the configured min/max duration
+    bounds so workflows that only tune ``--min-anchor-duration`` or
+    ``--max-anchor-duration`` remain valid. Explicit base values are validated by
+    ``AnchorSelectionConfig`` without clamping so user mistakes stay visible.
+    """
+
+    if args.base_anchor_duration is not None:
+        return args.base_anchor_duration
+    default_base = DEFAULT_ANCHOR_SELECTION_CONFIG.base_anchor_duration_seconds
+    return max(args.min_anchor_duration, min(default_base, args.max_anchor_duration))
 
 
 def _configure_logging(debug_enabled: bool, log_file: Path) -> None:
@@ -112,6 +153,23 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
         return EXIT_USAGE_ERROR
     if args.stretch_ratio_warning_threshold < 0:
         print("error: --stretch-ratio-warning-threshold must be >= 0", file=sys.stderr)
+        return EXIT_USAGE_ERROR
+    try:
+        anchor_selection_config = AnchorSelectionConfig(
+            anchor_density_per_minute=args.anchor_density_per_minute,
+            max_anchor_density_per_minute=args.max_anchor_density_per_minute,
+            min_anchor_count=args.min_anchor_count,
+            min_anchor_duration_seconds=args.min_anchor_duration,
+            base_anchor_duration_seconds=_resolve_base_anchor_duration(args),
+            max_anchor_duration_seconds=args.max_anchor_duration,
+            max_anchor_count=args.max_anchor_count,
+            stratified_bin_count=args.stratified_bin_count,
+            anchors_per_bin=args.anchors_per_bin,
+            min_snr_db=args.min_snr_db,
+            spectral_flatness_threshold=args.spectral_flatness_threshold,
+        )
+    except ValueError as exc:
+        print(f"error: invalid anchor selection options: {exc}", file=sys.stderr)
         return EXIT_USAGE_ERROR
     selected_pyannote_model = args.pyannote_model or DEFAULT_PYANNOTE_MODEL
     if args.pyannote_model is not None and args.vad_strategy != "pyannote":
@@ -161,8 +219,21 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
             speech_segments = detect_speech_segments(track.analysis_samples, sample_rate=args.analysis_sample_rate, vad_strategy=vad_strategy)
             LOGGER.debug("%s: speech_segments=%d", track.name, len(speech_segments))
             progress.update(f"{track.name}: speech detection completed")
-            anchor_candidates = select_anchor_candidates(track.analysis_samples, args.analysis_sample_rate, speech_segments)
-            LOGGER.debug("%s: anchor_candidates=%d", track.name, len(anchor_candidates))
+            anchor_selection_result = select_anchor_candidates_with_diagnostics(
+                track.analysis_samples,
+                args.analysis_sample_rate,
+                speech_segments,
+                config=anchor_selection_config,
+            )
+            anchor_candidates = anchor_selection_result.candidates
+            LOGGER.debug(
+                "%s: anchor_candidates=%d candidate_anchors=%d bins=%d longest_unanchored_span=%.3fs",
+                track.name,
+                len(anchor_candidates),
+                anchor_selection_result.diagnostics.candidate_anchor_count,
+                anchor_selection_result.diagnostics.stratified_bin_count,
+                anchor_selection_result.diagnostics.longest_unanchored_span_seconds,
+            )
             progress.update(f"{track.name}: anchor selection completed")
             LOGGER.debug("%s: starting initial offset estimation", track.name)
             offset_started = time.perf_counter()
@@ -187,7 +258,7 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
                     initial_offset_seconds=offset_estimate.offset_seconds,
                 )
                 LOGGER.debug("%s: completed drift anchor matching", track.name)
-                drift_estimate = fit_linear_drift_model(drift_matches)
+                drift_estimate = fit_linear_drift_model(drift_matches, local_duration_seconds=track.duration_seconds)
                 LOGGER.debug("%s: drift_matches=%d drift_estimated=%s", track.name, len(drift_matches), drift_estimate is not None)
             progress.update(f"{track.name}: drift estimation completed")
 
@@ -259,8 +330,10 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
             track_details[track.name] = {
                 "speech_segments": serialize_segments(speech_segments),
                 "anchor_candidates": serialize_anchors(anchor_candidates),
+                "anchor_selection_diagnostics": serialize_anchor_selection_diagnostics(anchor_selection_result.diagnostics),
                 "initial_offset": serialize_offset(offset_estimate),
                 "drift_anchor_matches": serialize_anchor_matches(drift_matches),
+                "drift_fit_diagnostics": serialize_drift_fit_diagnostics(None if drift_estimate is None else drift_estimate.diagnostics),
                 "drift_estimate": serialize_drift_estimate(drift_estimate),
                 "global_correction": None if global_correction is None else {
                     "local_adjust_enabled": args.local_adjust_enabled,
@@ -277,6 +350,7 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
                     "strategy": args.vad_strategy,
                     "pyannote_model": selected_pyannote_model if args.vad_strategy == "pyannote" else None,
                 },
+                "anchor_selection": anchor_selection_config.as_dict(),
                 "local_adjustment": None if local_adjustment is None else {
                     "events": [
                         {
@@ -303,6 +377,7 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
                 "strategy": args.vad_strategy,
                 "pyannote_model": selected_pyannote_model if args.vad_strategy == "pyannote" else None,
             },
+            anchor_selection_metadata=anchor_selection_config.as_dict(),
         )
         report_path = write_sync_report(report, args.out)
         markers_path = write_sync_markers_csv(report, args.out)

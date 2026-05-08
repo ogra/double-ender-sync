@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from double_ender_sync.api import AlignmentOptions
 from double_ender_sync.analysis.vad import DEFAULT_PYANNOTE_MODEL, MODERN_PYANNOTE_SEGMENTATION_MODEL
+from double_ender_sync.config import DEFAULT_ANCHOR_SELECTION_CONFIG
 from double_ender_sync.gui import AlignmentWorker, MainWindow, extract_audio_paths
 
 
@@ -211,3 +212,18 @@ def test_gui_forwards_custom_pyannote_model_for_pyannote_strategy(monkeypatch, t
 
     assert captured["options"].vad_strategy == "pyannote"
     assert captured["options"].pyannote_model == MODERN_PYANNOTE_SEGMENTATION_MODEL
+
+
+def test_gui_uses_shared_anchor_selection_defaults(monkeypatch, tmp_path) -> None:
+    _app()
+    window = MainWindow(lang="en")
+    captured: dict[str, AlignmentOptions] = {}
+
+    window.master_input.setText("master.wav")
+    window.track_list.addItem("speaker.wav")
+    window.output_input.setText(str(tmp_path))
+    monkeypatch.setattr(window, "_start_worker", lambda options: captured.setdefault("options", options))
+
+    window.run()
+
+    assert captured["options"].anchor_selection == DEFAULT_ANCHOR_SELECTION_CONFIG

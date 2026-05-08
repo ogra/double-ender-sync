@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Sequence
 
 from double_ender_sync import cli
 from double_ender_sync.analysis.vad import DEFAULT_PYANNOTE_MODEL
+from double_ender_sync.config import DEFAULT_ANCHOR_SELECTION_CONFIG, AnchorSelectionConfig
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,7 @@ class AlignmentOptions:
     stretch_method: Literal["resample", "pitch_preserving"] = "resample"
     vad_strategy: Literal["adaptive_rms", "rms", "silero", "webrtc", "pyannote"] = "adaptive_rms"
     pyannote_model: str = DEFAULT_PYANNOTE_MODEL
+    anchor_selection: AnchorSelectionConfig = field(default_factory=lambda: DEFAULT_ANCHOR_SELECTION_CONFIG)
     lang: str | None = None
 
 
@@ -56,7 +58,30 @@ def build_cli_argv(options: AlignmentOptions) -> list[str]:
         options.stretch_method,
         "--vad-strategy",
         options.vad_strategy,
+        "--min-anchor-duration",
+        str(options.anchor_selection.min_anchor_duration_seconds),
+        "--base-anchor-duration",
+        str(options.anchor_selection.base_anchor_duration_seconds),
+        "--max-anchor-duration",
+        str(options.anchor_selection.max_anchor_duration_seconds),
+        "--anchor-density-per-minute",
+        str(options.anchor_selection.anchor_density_per_minute),
+        "--max-anchor-density-per-minute",
+        str(options.anchor_selection.max_anchor_density_per_minute),
+        "--min-anchor-count",
+        str(options.anchor_selection.min_anchor_count),
+        "--max-anchor-count",
+        "none" if options.anchor_selection.max_anchor_count is None else str(options.anchor_selection.max_anchor_count),
     ]
+
+    if options.anchor_selection.stratified_bin_count is not None:
+        argv.extend(["--stratified-bin-count", str(options.anchor_selection.stratified_bin_count)])
+    if options.anchor_selection.anchors_per_bin is not None:
+        argv.extend(["--anchors-per-bin", str(options.anchor_selection.anchors_per_bin)])
+    if options.anchor_selection.min_snr_db is not None:
+        argv.extend(["--min-snr-db", str(options.anchor_selection.min_snr_db)])
+    if options.anchor_selection.spectral_flatness_threshold is not None:
+        argv.extend(["--spectral-flatness-threshold", str(options.anchor_selection.spectral_flatness_threshold)])
 
     if options.vad_strategy == "pyannote":
         argv.extend(["--pyannote-model", options.pyannote_model])

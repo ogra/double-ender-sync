@@ -2,10 +2,10 @@ import csv
 import json
 from pathlib import Path
 
-from double_ender_sync.analysis.anchors import AnchorCandidate
+from double_ender_sync.analysis.anchors import AnchorCandidate, AnchorSelectionDiagnostics
 from double_ender_sync.analysis.vad import SpeechSegment
 from double_ender_sync.alignment.offset import OffsetEstimate
-from double_ender_sync.analysis.drift import AnchorMatch, DriftEstimate
+from double_ender_sync.analysis.drift import AnchorMatch, DriftEstimate, DriftFitDiagnostics
 from double_ender_sync.i18n.catalog import TranslationCatalog
 from double_ender_sync.i18n.resolver import resolve_language
 from double_ender_sync.types import AudioTrack
@@ -18,6 +18,7 @@ def build_phase5_report(
     track_details: dict[str, dict],
     language: str | None = None,
     vad_metadata: dict | None = None,
+    anchor_selection_metadata: dict | None = None,
 ) -> dict:
     resolved_language = resolve_language(explicit_lang=language)
     catalog = TranslationCatalog(resolved_language)
@@ -34,7 +35,14 @@ def build_phase5_report(
 
     return {
         "phase": "phase5_reporting",
-        "analysis": {"sample_rate": analysis_sample_rate, "channels": "mono", "dtype": "float32", "language": resolved_language, "vad": vad_metadata or {}},
+        "analysis": {
+            "sample_rate": analysis_sample_rate,
+            "channels": "mono",
+            "dtype": "float32",
+            "language": resolved_language,
+            "vad": vad_metadata or {},
+            "anchor_selection": anchor_selection_metadata or {},
+        },
         "master": _track_metadata(master),
         "tracks": report_tracks,
         "warnings": global_warnings,
@@ -129,7 +137,33 @@ def _build_track_phase5_report(track: AudioTrack, detail: dict, catalog: Transla
         elif drift_estimate["residual_median_ms"] >= 30 or drift_estimate["residual_max_ms"] >= 100:
             warnings.append(_issue(track.name, "warning", "ELEVATED_RESIDUALS", catalog.t("warnings.elevated_residuals")))
 
+    drift_fit_diagnostics = detail.get("drift_fit_diagnostics") or {}
+    if not drift_fit_diagnostics and isinstance(drift_estimate, dict):
+        drift_fit_diagnostics = drift_estimate.get("diagnostics") or {}
+    for drift_warning in drift_fit_diagnostics.get("warnings", []):
+        warnings.append(
+            _issue(
+                track.name,
+                "warning",
+                drift_warning.get("code", "DRIFT_FIT_DIAGNOSTIC"),
+                drift_warning.get("message", "Drift fitting diagnostics need manual inspection."),
+                drift_warning.get("time_seconds"),
+            )
+        )
+
     local_adjustment = detail.get("local_adjustment") or {}
+    anchor_selection_diagnostics = detail.get("anchor_selection_diagnostics") or {}
+    for coverage_warning in anchor_selection_diagnostics.get("warnings", []):
+        warnings.append(
+            _issue(
+                track.name,
+                "warning",
+                coverage_warning.get("code", "ANCHOR_COVERAGE"),
+                coverage_warning.get("message", "Anchor coverage needs manual inspection."),
+                coverage_warning.get("time_seconds"),
+            )
+        )
+
     for local_warning in local_adjustment.get("warnings", []):
         warnings.append(_issue(track.name, "warning", "LOCAL_ADJUST", local_warning))
 
@@ -153,7 +187,56 @@ def serialize_segments(segments: list[SpeechSegment]) -> list[dict]:
 
 
 def serialize_anchors(anchors: list[AnchorCandidate]) -> list[dict]:
-    return [{"local_start": a.local_start, "local_end": a.local_end, "confidence": a.confidence, "rms": a.rms} for a in anchors]
+    return [
+        {
+            "local_start": a.local_start,
+            "local_end": a.local_end,
+            "confidence": a.confidence,
+            "rms": a.rms,
+            "bin_index": a.bin_index,
+            "snr_db": a.snr_db,
+            "spectral_flatness": a.spectral_flatness,
+            "quality_multiplier": a.quality_multiplier,
+            "duration_seconds": a.duration_seconds,
+        }
+        for a in anchors
+    ]
+
+
+def serialize_anchor_selection_diagnostics(diagnostics: AnchorSelectionDiagnostics) -> dict:
+    return {
+        "candidate_anchor_count": diagnostics.candidate_anchor_count,
+        "selected_anchor_count": diagnostics.selected_anchor_count,
+        "target_anchor_count": diagnostics.target_anchor_count,
+        "stratified_bin_count": diagnostics.stratified_bin_count,
+        "anchors_per_bin": diagnostics.anchors_per_bin,
+        "longest_unanchored_span_seconds": diagnostics.longest_unanchored_span_seconds,
+        "sparse_bin_count": diagnostics.sparse_bin_count,
+        "adaptive_duration": {
+            "min_seconds": diagnostics.adaptive_duration_min_seconds,
+            "median_seconds": diagnostics.adaptive_duration_median_seconds,
+            "max_seconds": diagnostics.adaptive_duration_max_seconds,
+        },
+        "rejected_candidate_counts": diagnostics.rejected_candidate_counts,
+        "bins": [
+            {
+                "index": b.index,
+                "start_seconds": b.start_seconds,
+                "end_seconds": b.end_seconds,
+                "candidate_count": b.candidate_count,
+                "selected_count": b.selected_count,
+            }
+            for b in diagnostics.bins
+        ],
+        "warnings": [
+            {
+                "code": w.code,
+                "message": w.message,
+                "time_seconds": w.time_seconds,
+            }
+            for w in diagnostics.warnings
+        ],
+    }
 
 
 def serialize_offset(offset: OffsetEstimate | None) -> dict | None:
@@ -169,7 +252,45 @@ def serialize_offset(offset: OffsetEstimate | None) -> dict | None:
 
 
 def serialize_anchor_matches(matches: list[AnchorMatch]) -> list[dict]:
-    return [{"local_start": m.local_start, "local_end": m.local_end, "master_start": m.master_start, "master_end": m.master_end, "offset_seconds": m.offset_seconds, "confidence": m.confidence, "score": m.score, "residual_ms": m.residual_ms} for m in matches]
+    return [
+        {
+            "local_start": m.local_start,
+            "local_end": m.local_end,
+            "master_start": m.master_start,
+            "master_end": m.master_end,
+            "offset_seconds": m.offset_seconds,
+            "confidence": m.confidence,
+            "score": m.score,
+            "residual_ms": m.residual_ms,
+            "included_in_regression": m.included_in_regression,
+            "rejected_reason": m.rejected_reason,
+        }
+        for m in matches
+    ]
+
+
+def serialize_drift_fit_diagnostics(diagnostics: DriftFitDiagnostics | None) -> dict | None:
+    if diagnostics is None:
+        return None
+    return {
+        "input_anchor_count": diagnostics.input_anchor_count,
+        "matched_anchor_count": diagnostics.matched_anchor_count,
+        "fitted_anchor_count": diagnostics.fitted_anchor_count,
+        "outlier_count": diagnostics.outlier_count,
+        "local_span_start_seconds": diagnostics.local_span_start_seconds,
+        "local_span_end_seconds": diagnostics.local_span_end_seconds,
+        "local_span_seconds": diagnostics.local_span_seconds,
+        "local_span_ratio": diagnostics.local_span_ratio,
+        "residual_rejection_threshold_ms": diagnostics.residual_rejection_threshold_ms,
+        "warnings": [
+            {
+                "code": warning.code,
+                "message": warning.message,
+                "time_seconds": warning.time_seconds,
+            }
+            for warning in diagnostics.warnings
+        ],
+    }
 
 
 def serialize_drift_estimate(estimate: DriftEstimate | None) -> dict | None:
@@ -181,4 +302,5 @@ def serialize_drift_estimate(estimate: DriftEstimate | None) -> dict | None:
         "anchor_count": estimate.anchor_count,
         "residual_median_ms": estimate.residual_median_ms,
         "residual_max_ms": estimate.residual_max_ms,
+        "diagnostics": serialize_drift_fit_diagnostics(estimate.diagnostics),
     }

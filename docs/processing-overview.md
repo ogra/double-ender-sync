@@ -115,13 +115,18 @@ Recommended operator loop:
 
 `select_anchor_candidates()` in `analysis/anchors.py` transforms speech segments into anchors:
 
+- Read shared defaults from `AnchorSelectionConfig` so CLI, API, and GUI use one source of truth
 - Keep segments above minimum duration (default 1.0 s)
-- Truncate each anchor to max duration (default 4.0 s)
-- Compute anchor RMS as a quality signal
-- Rank by `(confidence, rms)` descending
-- Keep top N anchors (currently top 5)
+- Estimate local SNR from nearby non-segment context and spectral flatness from the candidate audio
+- Choose a bounded adaptive duration from the configured minimum, base (default 4.0 s), and maximum (default 8.0 s) duration values
+- Keep high-SNR, low-flatness anchors near the base duration, extend weaker/noisier anchors toward the maximum, and explicitly reject candidates when optional SNR/flatness gates are configured
+- Compute anchor RMS, SNR, spectral flatness, quality multiplier, and duration as transparent quality signals
+- Assign each candidate to a stratified timeline bin by midpoint
+- Select top candidates per bin first so early, middle, and late regions can contribute when viable candidates exist
+- Fill any remaining duration-aware budget by global quality ranking that includes confidence, SNR, flatness, and RMS
+- Record diagnostics such as candidate count, selected count, per-bin counts, sparse bins, longest unanchored span, adaptive duration min/median/max, and rejected candidate counts
 
-This prioritizes clearer, higher-energy and higher-confidence regions while bounding compute cost.
+This prioritizes clearer, higher-energy, higher-confidence, and more distinctive regions while also preserving timeline coverage for drift estimation. Empty bins do not fail selection by themselves, but sparse overall coverage and low-quality rejections are reported so editors can inspect low-evidence regions.
 
 ## 3.3 Feature normalization and matching
 

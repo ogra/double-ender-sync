@@ -163,6 +163,16 @@ output/
   Skip interactive confirmation and continue even when stretch ratio warning threshold is exceeded.
 - `--stretch-method {resample,pitch_preserving}`  
   Global correction method. `resample` is default. `pitch_preserving` uses librosa and prioritizes pitch stability for larger drift corrections.
+- `--min-anchor-duration 1.0` / `--base-anchor-duration 4.0` / `--max-anchor-duration 8.0`
+  Configure the adaptive speech-derived anchor duration policy shared by CLI/API/GUI runs. High-SNR, distinctive material stays near the base duration; noisier or spectrally flatter material can extend toward the maximum instead of using a globally fixed clip length. If `--base-anchor-duration` is omitted, the CLI derives an effective default by clamping 4.0 seconds into the configured min/max bounds, so max-only or min-only tuning remains valid. Explicit base values are validated against the min/max bounds and fail clearly when inconsistent.
+- `--min-snr-db <db>` / `--spectral-flatness-threshold <0.0-1.0>`
+  Optional quality gates for rejecting low-SNR or noise-like anchor candidates. Defaults leave these hard rejections disabled while still recording SNR/flatness diagnostics and confidence downgrades.
+- `--anchor-density-per-minute 1.0` / `--max-anchor-density-per-minute 2.0`
+  Configure the duration-aware anchor budget and the validation ceiling for custom density values. API callers that raise `anchor_density_per_minute` should raise `max_anchor_density_per_minute` with it.
+- `--min-anchor-count 5` / `--max-anchor-count 120`
+  Configure the minimum target budget for short recordings and the safety cap for selected anchor candidates. Use `none` for `--max-anchor-count` only for debugging/unbounded experiments.
+- `--stratified-bin-count <count>` / `--anchors-per-bin <count>`
+  Override the automatic timeline stratification used for drift-anchor selection. By default, the selector derives roughly one-minute bins bounded by the target anchor budget, picks top candidates per bin first, then fills the remaining budget globally; sparse coverage and long unanchored spans are reported as warnings rather than hidden.
 - `--debug`  
   Enable debug logging to identify which stage is running when resource usage spikes.
 - `--vad-strategy {silero,adaptive_rms,rms,webrtc,pyannote}`  
@@ -182,6 +192,8 @@ output/
   Write logs to a specific file path (default: `output/double-ender-sync.log`).
 
 Use `double-ender-sync --help` for the full option list.
+
+For long recordings, see [Runtime tuning guide for long recordings](docs/runtime-tuning.md) for a report-driven process to reduce processing time while preserving alignment confidence.
 
 ### VAD strategy selection guide (recommended trial order)
 
@@ -307,7 +319,7 @@ In addition to CLI usage, you can run the same pipeline from Python.
 ```python
 from pathlib import Path
 
-from double_ender_sync import AlignmentOptions, run_alignment
+from double_ender_sync import AlignmentOptions, AnchorSelectionConfig, run_alignment
 
 options = AlignmentOptions(
     master=Path("input/master.wav"),
@@ -316,6 +328,7 @@ options = AlignmentOptions(
     analysis_sample_rate=16000,
     local_adjust_enabled=False,
     normalize_output=False,
+    anchor_selection=AnchorSelectionConfig(anchor_density_per_minute=1.0, max_anchor_count=120),
 )
 
 exit_code = run_alignment(options)
@@ -323,7 +336,7 @@ if exit_code != 0:
     raise RuntimeError(f"alignment failed with exit code {exit_code}")
 ```
 
-`run_alignment(...)` returns the same exit code semantics as the CLI `main(...)`.
+`run_alignment(...)` returns the same exit code semantics as the CLI `main(...)`. Anchor-selection options use the same `AnchorSelectionConfig` defaults as CLI and GUI runs.
 
 
 ## Translation operations rules

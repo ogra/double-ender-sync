@@ -44,7 +44,12 @@ def apply_local_adjustment(
     speech_segments = detect_speech_segments(adjusted, sample_rate=sample_rate)
     silence_regions = _compute_silence_regions(len(adjusted), sample_rate, speech_segments)
 
+    skipped_rejected_count = 0
     for event in residual_events:
+        if event.get("included_in_regression") is False:
+            skipped_rejected_count += 1
+            continue
+
         residual_ms = float(event.get("residual_ms", 0.0))
         if abs(residual_ms) < residual_threshold_ms:
             continue
@@ -68,6 +73,11 @@ def apply_local_adjustment(
                 residual_ms=residual_ms,
                 confidence=confidence,
             )
+        )
+
+    if skipped_rejected_count:
+        warnings.append(
+            f"skipped {skipped_rejected_count} rejected drift anchor(s) during local adjustment"
         )
 
     if not events and not warnings:

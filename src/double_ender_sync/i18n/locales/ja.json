@@ -49,5 +49,18 @@
   "gui.current_task_starting": "現在のタスク: 開始中...",
   "gui.current_task": "現在のタスク: {task}",
   "gui.current_task_done": "現在のタスク: 完了",
-  "gui.pyannote_model": "pyannoteモデル/パイプライン"
+  "gui.pyannote_model": "pyannoteモデル/パイプライン",
+  "gui.drift_model": "ドリフトモデル方針",
+  "gui.drift_model.auto": "自動（非線形有効時以外は線形）",
+  "gui.drift_model.linear": "線形コントロールモデル",
+  "gui.drift_model.piecewise_linear": "区分線形（実験的）",
+  "gui.drift_model.spline": "スプライン（実験的）",
+  "gui.drift_model.kalman": "カルマン（研究用・実験的）",
+  "gui.allow_nonlinear_drift": "実験的な非線形ドリフトを許可",
+  "gui.max_breakpoints": "最大ブレークポイント数",
+  "gui.min_anchors_for_piecewise": "区分線形の最小アンカー数",
+  "gui.min_anchors_per_segment": "セグメントごとの最小アンカー数",
+  "gui.max_anchor_gap_seconds": "信頼済みアンカー最大間隔（秒）",
+  "gui.max_anchor_gap_disabled": "無効",
+  "gui.verbose_report": "詳細/デバッグレポート"
 }

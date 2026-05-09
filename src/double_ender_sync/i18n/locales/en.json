@@ -49,5 +49,18 @@
   "gui.current_task_starting": "Current task: starting...",
   "gui.current_task": "Current task: {task}",
   "gui.current_task_done": "Current task: completed",
-  "gui.pyannote_model": "pyannote model/pipeline"
+  "gui.pyannote_model": "pyannote model/pipeline",
+  "gui.drift_model": "Drift model policy",
+  "gui.drift_model.auto": "Auto (linear unless nonlinear is enabled)",
+  "gui.drift_model.linear": "Linear control model",
+  "gui.drift_model.piecewise_linear": "Piecewise linear (experimental)",
+  "gui.drift_model.spline": "Spline (experimental)",
+  "gui.drift_model.kalman": "Kalman (research/experimental)",
+  "gui.allow_nonlinear_drift": "Allow experimental non-linear drift",
+  "gui.max_breakpoints": "Max breakpoints",
+  "gui.min_anchors_for_piecewise": "Min anchors for piecewise",
+  "gui.min_anchors_per_segment": "Min anchors per segment",
+  "gui.max_anchor_gap_seconds": "Max trusted anchor gap (s)",
+  "gui.max_anchor_gap_disabled": "Disabled",
+  "gui.verbose_report": "Verbose/debug report"
 }

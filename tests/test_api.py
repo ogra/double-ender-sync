@@ -2,8 +2,14 @@ from pathlib import Path
 
 import pytest
 
-from double_ender_sync.api import AlignmentOptions, build_cli_argv, run_alignment
+import double_ender_sync
+from double_ender_sync.api import AlignmentOptions, build_cli_argv, get_version, run_alignment
 from double_ender_sync.analysis.vad import MODERN_PYANNOTE_SEGMENTATION_MODEL
+
+
+def test_api_exposes_package_version() -> None:
+    assert get_version() == "0.2.2"
+    assert double_ender_sync.__version__ == "0.2.2"
 
 
 def test_build_cli_argv_includes_required_fields() -> None:
@@ -164,3 +170,117 @@ def test_build_cli_argv_rejects_pyannote_model_for_non_pyannote_strategy() -> No
 
     with pytest.raises(ValueError, match="pyannote_model"):
         build_cli_argv(options)
+
+
+def test_build_cli_argv_includes_linear_drift_model_policy() -> None:
+    options = AlignmentOptions(
+        master=Path("input/master.wav"),
+        tracks=[Path("input/speaker-a.wav")],
+        out=Path("output"),
+        drift_model="linear",
+    )
+
+    argv = build_cli_argv(options)
+
+    assert "--drift-model" in argv
+    assert "linear" in argv
+    assert "--allow-nonlinear-drift" not in argv
+
+
+def test_build_cli_argv_rejects_piecewise_without_experimental_gate() -> None:
+    options = AlignmentOptions(
+        master=Path("input/master.wav"),
+        tracks=[Path("input/speaker-a.wav")],
+        out=Path("output"),
+        drift_model="piecewise_linear",  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ValueError, match="requires allow_nonlinear_drift"):
+        build_cli_argv(options)
+
+
+def test_build_cli_argv_includes_piecewise_gate_and_thresholds() -> None:
+    options = AlignmentOptions(
+        master=Path("input/master.wav"),
+        tracks=[Path("input/speaker-a.wav")],
+        out=Path("output"),
+        drift_model="piecewise_linear",
+        allow_nonlinear_drift=True,
+        max_breakpoints=1,
+        min_residual_improvement_ms=2.5,
+    )
+
+    argv = build_cli_argv(options)
+
+    assert "--allow-nonlinear-drift" in argv
+    assert "--drift-model" in argv
+    assert "piecewise_linear" in argv
+    assert "--max-breakpoints" in argv
+    assert "1" in argv
+    assert "--min-residual-improvement-ms" in argv
+    assert "2.5" in argv
+
+
+def test_build_cli_argv_rejects_invalid_spline_knot_source_even_for_linear_policy() -> None:
+    options = AlignmentOptions(
+        master=Path("input/master.wav"),
+        tracks=[Path("input/speaker-a.wav")],
+        out=Path("output"),
+        drift_model="linear",
+        spline_knot_source="bad",  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ValueError, match="spline_knot_source"):
+        build_cli_argv(options)
+
+
+def test_build_cli_argv_includes_spline_drift_policy() -> None:
+    options = AlignmentOptions(
+        master=Path("input/master.wav"),
+        tracks=[Path("input/speaker-a.wav")],
+        out=Path("output"),
+        drift_model="spline",
+        allow_nonlinear_drift=True,
+        min_anchors_for_spline=7,
+        spline_knot_source="anchors",
+        min_knot_spacing_seconds=45.0,
+    )
+
+    argv = build_cli_argv(options)
+
+    assert "--allow-nonlinear-drift" in argv
+    assert "--drift-model" in argv
+    assert "spline" in argv
+    assert "--min-anchors-for-spline" in argv
+    assert "7" in argv
+    assert "--spline-knot-source" in argv
+    assert "anchors" in argv
+    assert "--min-knot-spacing-seconds" in argv
+    assert "45.0" in argv
+
+
+def test_build_cli_argv_includes_max_anchor_gap_seconds() -> None:
+    options = AlignmentOptions(
+        master=Path("input/master.wav"),
+        tracks=[Path("input/speaker-a.wav")],
+        out=Path("output"),
+        max_anchor_gap_seconds=123.5,
+    )
+
+    argv = build_cli_argv(options)
+
+    assert "--max-anchor-gap-seconds" in argv
+    assert "123.5" in argv
+
+
+def test_build_cli_argv_includes_verbose_report_flag() -> None:
+    options = AlignmentOptions(
+        master=Path("input/master.wav"),
+        tracks=[Path("input/speaker-a.wav")],
+        out=Path("output"),
+        verbose_report=True,
+    )
+
+    argv = build_cli_argv(options)
+
+    assert "--verbose-report" in argv

@@ -6,6 +6,9 @@ include THIRD_PARTY_NOTICES.md
 # package source
 graft src
 
+# release examples
+graft examples
+
 # exclude development/editor/agent metadata
 prune .devcontainer
 prune .vscode

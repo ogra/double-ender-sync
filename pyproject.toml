@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "double-ender-sync"
-version = "0.2.1"
+version = "0.2.2"
 description = "Double-ender time alignment engine for podcast production"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -46,6 +46,7 @@ vad-pyannote = [
 ]
 dev = [
   "pytest",
+  "pyflakes>=3.4",
 ]
 gui = [
   "PySide6>=6.7",
@@ -61,12 +62,14 @@ all = [
   "torchaudio==2.11.0",
   "torchcodec>=0.11.1,<0.12",
   "pytest",
+  "pyflakes>=3.4",
 ]
 
 [project.scripts]
 double-ender-sync = "double_ender_sync.cli:main"
 double-ender-sync-gui = "double_ender_sync.gui_launcher:main"
 double-ender-sync-validate-locales = "double_ender_sync.i18n.validate:main"
+double-ender-sync-generate-demo-pack = "double_ender_sync.calibration.demo_pack:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -74,6 +77,7 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
 
 [tool.setuptools.package-data]
 "double_ender_sync.i18n.locales" = ["*.json"]

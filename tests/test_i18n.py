@@ -1,5 +1,3 @@
-import os
-
 from double_ender_sync.i18n.catalog import TranslationCatalog
 from double_ender_sync.i18n.resolver import SUPPORTED_LANGUAGES, extract_explicit_lang, resolve_language
 from double_ender_sync.i18n.validate import validate_locales

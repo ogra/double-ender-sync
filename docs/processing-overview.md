@@ -43,6 +43,7 @@ It also handles argument validation, progress updates, logging, and top-level er
 - `audio/normalize.py`: normalization helpers used when requested.
 - `audio/resample.py`: sample-rate conversion used by analysis/rendering paths.
 - `audio/render.py`: writes final synced WAV files.
+- `alignment/timeline.py`: renders source samples onto the master timeline with bounded-memory chunks, source/master sample-rate-aware lookup, and explicit silence padding for unsupported time-map regions.
 
 ### Analysis (`analysis/`)
 
@@ -195,7 +196,9 @@ Local adjustment is intentionally optional and should be used with report review
 
 The tool writes:
 
-- `sync-report.json`: structured diagnostics for master + per-track stages
+- `sync-report.json`: structured alignment diagnostics for master + per-track stages.
+  Top-level metadata identifies the report as `report_type: "alignment_diagnostics"`
+  with `schema_version: "1"`.
 - `sync-markers.csv`: marker-style timeline information for manual review
 - `warnings.txt`: human-readable warnings and confidence issues
 
@@ -212,7 +215,7 @@ If you are new to this codebase, read in this order:
 3. `src/double_ender_sync/analysis/anchors.py` (anchor generation)
 4. `src/double_ender_sync/alignment/offset.py` (initial offset)
 5. `src/double_ender_sync/analysis/drift.py` + `features.py` (multi-anchor drift model)
-6. `src/double_ender_sync/alignment/timeline.py` (global correction)
+6. `src/double_ender_sync/alignment/timeline.py` (global correction; renders through a monotonic `t_master = f(t_local)` mapping, pads outside-support and internal-gap regions with silence, and processes long outputs in chunks)
 7. `src/double_ender_sync/report/report.py` (final output schema)
 
 This sequence matches the runtime pipeline and makes it easier to map implementation details to output artifacts.

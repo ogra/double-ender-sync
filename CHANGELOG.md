@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.2] - 2026-05-09
+
+### Added
+
+- Added consistent version display across CLI (`--version` / `-V`), Python API, and GUI footer.
+- Added selectable non-linear drift models across CLI, API, and GUI.
+- Included a calibration example script in source distribution so release artifacts contain the example tooling.
+
+### Changed
+
+- Updated `sync-report.json` data structure.
+
 ## [0.2.1] - 2026-05-08
 
 ### Added

@@ -30,9 +30,11 @@ from PySide6.QtWidgets import (
     QSizePolicy,
 )
 
-from double_ender_sync.api import AlignmentOptions, run_alignment
+from double_ender_sync._version import get_gui_version_text
+from double_ender_sync.api import AlignmentOptions, build_cli_argv, run_alignment
 from double_ender_sync.analysis.vad import DEFAULT_PYANNOTE_MODEL
 from double_ender_sync.cli import EXIT_STRETCH_CONFIRMATION_REQUIRED
+from double_ender_sync.config import DEFAULT_DRIFT_MODEL_CONFIG
 from double_ender_sync.i18n import TranslationCatalog, resolve_language
 from double_ender_sync.i18n.resolver import extract_explicit_lang
 
@@ -167,10 +169,49 @@ class MainWindow(QMainWindow):
         self.vad_strategy_input.addItem(self.t("gui.vad_strategy.silero"), "silero")
         self.vad_strategy_input.addItem(self.t("gui.vad_strategy.webrtc"), "webrtc")
         self.vad_strategy_input.addItem(self.t("gui.vad_strategy.pyannote"), "pyannote")
+        self.drift_model_input = QComboBox()
+        self.drift_model_input.addItem(self.t("gui.drift_model.auto"), "auto")
+        self.drift_model_input.addItem(self.t("gui.drift_model.linear"), "linear")
+        self.drift_model_input.addItem(self.t("gui.drift_model.piecewise_linear"), "piecewise_linear")
+        self.drift_model_input.addItem(self.t("gui.drift_model.spline"), "spline")
+        self.drift_model_input.addItem(self.t("gui.drift_model.kalman"), "kalman")
+        self.drift_model_input.setCurrentIndex(self.drift_model_input.findData(DEFAULT_DRIFT_MODEL_CONFIG.drift_model))
+        self.allow_nonlinear_drift_checkbox = QCheckBox(self.t("gui.allow_nonlinear_drift"))
+        self.allow_nonlinear_drift_checkbox.setChecked(DEFAULT_DRIFT_MODEL_CONFIG.allow_nonlinear_drift)
+        shared_non_negative_spinbox_max = 2_147_483_647
+        # Match the shared CLI/API validation where Qt spinboxes allow it:
+        # these values have minimum-only validation, so avoid small GUI-only
+        # caps and use the largest signed integer supported by QSpinBox.
+        self.max_breakpoints_input = QSpinBox()
+        self.max_breakpoints_input.setRange(0, shared_non_negative_spinbox_max)
+        self.max_breakpoints_input.setValue(DEFAULT_DRIFT_MODEL_CONFIG.max_breakpoints)
+        self.max_breakpoints_input.setMinimumWidth(140)
+        self.min_anchors_for_piecewise_input = QSpinBox()
+        self.min_anchors_for_piecewise_input.setRange(2, shared_non_negative_spinbox_max)
+        self.min_anchors_for_piecewise_input.setValue(DEFAULT_DRIFT_MODEL_CONFIG.min_anchors_for_piecewise)
+        self.min_anchors_for_piecewise_input.setMinimumWidth(140)
+        self.min_anchors_per_segment_input = QSpinBox()
+        self.min_anchors_per_segment_input.setRange(2, shared_non_negative_spinbox_max // 2)
+        self.min_anchors_per_segment_input.setValue(DEFAULT_DRIFT_MODEL_CONFIG.min_anchors_per_segment)
+        self.min_anchors_per_segment_input.setMinimumWidth(140)
+        self.max_anchor_gap_input = QDoubleSpinBox()
+        self.max_anchor_gap_input.setRange(0.0, float(shared_non_negative_spinbox_max))
+        self.max_anchor_gap_input.setDecimals(3)
+        self.max_anchor_gap_input.setSingleStep(30.0)
+        self.max_anchor_gap_input.setSpecialValueText(self.t("gui.max_anchor_gap_disabled"))
+        self.max_anchor_gap_input.setValue(DEFAULT_DRIFT_MODEL_CONFIG.max_anchor_gap_seconds or 0.0)
+        self.max_anchor_gap_input.setMinimumWidth(140)
+        self.verbose_report_checkbox = QCheckBox(self.t("gui.verbose_report"))
+
         self.pyannote_model_input = QLineEdit(DEFAULT_PYANNOTE_MODEL)
         self.pyannote_model_input.setPlaceholderText(DEFAULT_PYANNOTE_MODEL)
         self.vad_strategy_input.currentIndexChanged.connect(self._sync_pyannote_model_input_enabled)
+        self.drift_model_input.currentIndexChanged.connect(self._sync_drift_model_gate)
+        self.allow_nonlinear_drift_checkbox.toggled.connect(self._sync_drift_model_gate)
+        self.min_anchors_per_segment_input.valueChanged.connect(self._sync_piecewise_anchor_minimum)
         self._sync_pyannote_model_input_enabled()
+        self._sync_drift_model_gate()
+        self._sync_piecewise_anchor_minimum()
 
         layout.addLayout(form_layout)
 
@@ -187,8 +228,16 @@ class MainWindow(QMainWindow):
         advanced_layout.addRow(QLabel(self.t("gui.stretch_threshold")), self.stretch_threshold_input)
         advanced_layout.addRow(QLabel(self.t("gui.vad_strategy")), self.vad_strategy_input)
         advanced_layout.addRow(QLabel(self.t("gui.pyannote_model")), self.pyannote_model_input)
+        advanced_layout.addRow(QLabel(self.t("gui.drift_model")), self.drift_model_input)
+        advanced_layout.addRow(self.allow_nonlinear_drift_checkbox)
+        advanced_layout.addRow(QLabel(self.t("gui.max_breakpoints")), self.max_breakpoints_input)
+        advanced_layout.addRow(QLabel(self.t("gui.min_anchors_for_piecewise")), self.min_anchors_for_piecewise_input)
+        advanced_layout.addRow(QLabel(self.t("gui.min_anchors_per_segment")), self.min_anchors_per_segment_input)
+        advanced_layout.addRow(QLabel(self.t("gui.max_anchor_gap_seconds")), self.max_anchor_gap_input)
+        advanced_layout.addRow(self.verbose_report_checkbox)
 
         advanced_box = QGroupBox(self.t("gui.advanced_settings"))
+        self.advanced_box = advanced_box
         advanced_box.setCheckable(True)
         advanced_box.setChecked(False)
         advanced_box_layout = QVBoxLayout(advanced_box)
@@ -223,6 +272,13 @@ class MainWindow(QMainWindow):
         self.log_view.setPlaceholderText(self.t("gui.log_placeholder"))
         layout.addWidget(self.log_view)
 
+        footer_row = QHBoxLayout()
+        footer_row.addStretch(1)
+        self.version_label = QLabel(get_gui_version_text())
+        self.version_label.setAlignment(Qt.AlignRight | Qt.AlignBottom)
+        footer_row.addWidget(self.version_label)
+        layout.addLayout(footer_row)
+
         self.setCentralWidget(root)
         self._worker_thread: QThread | None = None
         self._worker: AlignmentWorker | None = None
@@ -250,7 +306,29 @@ class MainWindow(QMainWindow):
         return self.pyannote_model_input.text().strip() or DEFAULT_PYANNOTE_MODEL
 
     def _sync_pyannote_model_input_enabled(self, *_args: object) -> None:
-        self.pyannote_model_input.setEnabled(self._selected_vad_strategy() == "pyannote")
+        pyannote_selected = self._selected_vad_strategy() == "pyannote"
+        if pyannote_selected and hasattr(self, "advanced_box"):
+            self.advanced_box.setChecked(True)
+        self.pyannote_model_input.setEnabled(pyannote_selected)
+
+    def _sync_drift_model_gate(self, *_args: object) -> None:
+        selected_model = str(self.drift_model_input.currentData())
+        nonlinear_selected = selected_model in {"piecewise_linear", "spline", "kalman"}
+        nonlinear_allowed = self.allow_nonlinear_drift_checkbox.isChecked()
+        if nonlinear_selected and not nonlinear_allowed:
+            sender = self.sender()
+            if sender is self.allow_nonlinear_drift_checkbox:
+                auto_index = self.drift_model_input.findData("auto")
+                if auto_index >= 0:
+                    self.drift_model_input.setCurrentIndex(auto_index)
+            else:
+                self.allow_nonlinear_drift_checkbox.setChecked(True)
+
+    def _sync_piecewise_anchor_minimum(self, *_args: object) -> None:
+        required_minimum = int(self.min_anchors_per_segment_input.value()) * 2
+        self.min_anchors_for_piecewise_input.setMinimum(required_minimum)
+        if self.min_anchors_for_piecewise_input.value() < required_minimum:
+            self.min_anchors_for_piecewise_input.setValue(required_minimum)
 
     def select_master(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(self, self.t("gui.dialog.select_master"), filter=SUPPORTED_AUDIO_FILTER)
@@ -300,7 +378,22 @@ class MainWindow(QMainWindow):
             stretch_method="pitch_preserving" if self.pitch_preserving_checkbox.isChecked() else "resample",
             vad_strategy=vad_strategy,
             pyannote_model=self._selected_pyannote_model(vad_strategy),
+            drift_model=str(self.drift_model_input.currentData()),
+            allow_nonlinear_drift=self.allow_nonlinear_drift_checkbox.isChecked(),
+            max_breakpoints=int(self.max_breakpoints_input.value()),
+            min_anchors_for_piecewise=int(self.min_anchors_for_piecewise_input.value()),
+            min_anchors_per_segment=int(self.min_anchors_per_segment_input.value()),
+            max_anchor_gap_seconds=(
+                None if self.max_anchor_gap_input.value() <= 0.0 else float(self.max_anchor_gap_input.value())
+            ),
+            verbose_report=self.verbose_report_checkbox.isChecked(),
         )
+
+        try:
+            build_cli_argv(options)
+        except ValueError as exc:
+            self._show_error(str(exc))
+            return
 
         self._reset_progress_state()
         self.append_log(self.t("gui.log.starting"))

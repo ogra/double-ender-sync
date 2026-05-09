@@ -1,21 +1,23 @@
 import argparse
 import logging
+import math
 import sys
 import time
 from pathlib import Path
 
+from double_ender_sync._version import get_cli_version_text
 from double_ender_sync.alignment.offset import estimate_initial_offset
 from double_ender_sync.analysis.anchors import select_anchor_candidates_with_diagnostics
-from double_ender_sync.analysis.drift import fit_linear_drift_model, match_anchors_for_drift
+from double_ender_sync.analysis.drift import match_anchors_for_drift, select_drift_model
 from double_ender_sync.analysis.vad import DEFAULT_PYANNOTE_MODEL, build_vad_strategy, detect_speech_segments
 from double_ender_sync.audio.io import AudioLoadError, cleanup_temp_files, load_audio_track
 from double_ender_sync.audio.render import write_synced_track
-from double_ender_sync.config import DEFAULT_ANCHOR_SELECTION_CONFIG, AnchorSelectionConfig
+from double_ender_sync.config import DEFAULT_ANCHOR_SELECTION_CONFIG, DEFAULT_DRIFT_MODEL_CONFIG, AnchorSelectionConfig, DriftModelConfig
 from double_ender_sync.alignment.timeline import apply_global_time_correction
 from double_ender_sync.alignment.local_adjust import apply_local_adjustment
 from double_ender_sync.i18n.resolver import resolve_language
 from double_ender_sync.report.report import (
-    build_phase5_report,
+    build_alignment_diagnostics_report,
     serialize_anchors,
     serialize_anchor_matches,
     serialize_anchor_selection_diagnostics,
@@ -73,8 +75,21 @@ def _parse_optional_anchor_count(value: str) -> int | None:
         ) from exc
 
 
+def _parse_optional_positive_float(value: str) -> float | None:
+    if value.lower() in {"none", "off", "disabled"}:
+        return None
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive float or one of: none/off/disabled") from exc
+    if not math.isfinite(parsed) or parsed <= 0.0:
+        raise argparse.ArgumentTypeError("must be a finite value > 0 or one of: none/off/disabled")
+    return parsed
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Double-ender sync tool")
+    parser.add_argument("--version", "-V", action="version", version=get_cli_version_text())
     parser.add_argument("--master", required=True, type=Path, help="Master mixed reference WAV file")
     parser.add_argument("--track", action="append", required=True, type=Path, help="Speaker local track WAV file")
     parser.add_argument("--out", required=True, type=Path, help="Output directory")
@@ -83,11 +98,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--local-adjust-enabled", action="store_true", help="Enable optional phase-4 local adjustment")
     parser.add_argument("--local-adjust-threshold-ms", type=float, default=80.0, help="Residual threshold in ms for local adjustment")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging for pipeline and memory checkpoints")
+    parser.add_argument("--verbose-report", action="store_true", help="Mark sync-report.json as verbose/debug output and include the effective configuration snapshot")
     parser.add_argument("--vad-strategy", choices=["silero", "adaptive_rms", "rms", "webrtc", "pyannote"], default="adaptive_rms", help="VAD backend strategy")
     parser.add_argument("--pyannote-model", default=None, help=f"pyannote model/pipeline id when --vad-strategy pyannote is selected (default: {DEFAULT_PYANNOTE_MODEL})")
     parser.add_argument("--stretch-ratio-warning-threshold", type=float, default=0.003, help="Warn when abs(stretch_ratio-1.0) exceeds this value")
     parser.add_argument("--stretch-ratio-auto-continue", action="store_true", help="Continue automatically when stretch ratio warning threshold is exceeded")
     parser.add_argument("--stretch-method", choices=["resample", "pitch_preserving"], default="resample", help="Global time correction method")
+    parser.add_argument("--drift-model", choices=["auto", "linear", "piecewise_linear", "spline", "kalman"], default=DEFAULT_DRIFT_MODEL_CONFIG.drift_model, help="Drift model policy; non-linear and research Kalman models require --allow-nonlinear-drift")
+    parser.add_argument("--allow-nonlinear-drift", action="store_true", default=DEFAULT_DRIFT_MODEL_CONFIG.allow_nonlinear_drift, help="Enable experimental non-linear drift candidates and explicit research Kalman smoothing")
+    parser.add_argument("--min-anchors-for-piecewise", type=int, default=DEFAULT_DRIFT_MODEL_CONFIG.min_anchors_for_piecewise, help="Minimum fitted anchors before piecewise breakpoint search")
+    parser.add_argument("--min-anchors-per-segment", type=int, default=DEFAULT_DRIFT_MODEL_CONFIG.min_anchors_per_segment, help="Minimum fitted anchors required in each piecewise segment")
+    parser.add_argument("--max-breakpoints", type=int, default=DEFAULT_DRIFT_MODEL_CONFIG.max_breakpoints, help="Maximum piecewise breakpoints to evaluate for non-linear drift candidates")
+    parser.add_argument("--min-residual-improvement-ms", type=float, default=DEFAULT_DRIFT_MODEL_CONFIG.min_residual_improvement_ms, help="Required median residual improvement before selecting a richer drift model")
+    parser.add_argument("--min-relative-residual-improvement", type=float, default=DEFAULT_DRIFT_MODEL_CONFIG.min_relative_residual_improvement, help="Required relative median residual improvement before selecting a richer drift model")
+    parser.add_argument("--max-abs-rate-deviation-ppm", type=float, default=DEFAULT_DRIFT_MODEL_CONFIG.max_abs_rate_deviation_ppm, help="Reject piecewise fits whose absolute local-rate deviation exceeds this ppm")
+    parser.add_argument("--max-rate-change-ppm", type=float, default=DEFAULT_DRIFT_MODEL_CONFIG.max_rate_change_ppm, help="Reject piecewise fits whose adjacent segment rate change exceeds this ppm")
+    parser.add_argument("--warn-abs-rate-deviation-ppm", type=float, default=DEFAULT_DRIFT_MODEL_CONFIG.warn_abs_rate_deviation_ppm, help="Warn when accepted local-rate deviation exceeds this ppm")
+    parser.add_argument("--max-anchor-gap-seconds", type=_parse_optional_positive_float, default=DEFAULT_DRIFT_MODEL_CONFIG.max_anchor_gap_seconds, help="Report an unsupported region when trusted drift anchors are farther apart than this many seconds; use none/off/disabled to disable")
+    parser.add_argument("--min-anchors-for-spline", type=int, default=DEFAULT_DRIFT_MODEL_CONFIG.min_anchors_for_spline, help="Minimum fitted anchors before monotonic cubic spline fitting")
+    parser.add_argument("--spline-knot-source", choices=["auto", "piecewise_boundaries", "anchors"], default=DEFAULT_DRIFT_MODEL_CONFIG.spline_knot_source, help="Knot source for spline drift candidates")
+    parser.add_argument("--min-knot-spacing-seconds", type=float, default=DEFAULT_DRIFT_MODEL_CONFIG.min_knot_spacing_seconds, help="Minimum spacing for anchor-decimated spline knots")
+    parser.add_argument("--spline-validation-sample-count", type=int, default=DEFAULT_DRIFT_MODEL_CONFIG.spline_validation_sample_count, help="Sample count for spline monotonicity and local-rate validation")
+    parser.add_argument("--min-anchors-for-kalman", type=int, default=DEFAULT_DRIFT_MODEL_CONFIG.min_anchors_for_kalman, help="Minimum fitted anchors before explicit research Kalman smoothing")
+    parser.add_argument("--kalman-process-offset-noise-ms", type=float, default=DEFAULT_DRIFT_MODEL_CONFIG.kalman_process_offset_noise_ms, help="Kalman process noise for offset wander, in ms per sqrt(second)")
+    parser.add_argument("--kalman-process-rate-noise-ppm", type=float, default=DEFAULT_DRIFT_MODEL_CONFIG.kalman_process_rate_noise_ppm, help="Kalman process noise for drift-rate variability, in ppm per sqrt(second)")
+    parser.add_argument("--kalman-observation-noise-ms", type=float, default=DEFAULT_DRIFT_MODEL_CONFIG.kalman_observation_noise_ms, help="Base Kalman anchor-observation noise in ms before confidence scaling")
+    parser.add_argument("--kalman-initial-offset-uncertainty-ms", type=float, default=DEFAULT_DRIFT_MODEL_CONFIG.kalman_initial_offset_uncertainty_ms, help="Initial Kalman offset uncertainty in ms")
+    parser.add_argument("--kalman-initial-rate-uncertainty-ppm", type=float, default=DEFAULT_DRIFT_MODEL_CONFIG.kalman_initial_rate_uncertainty_ppm, help="Initial Kalman rate uncertainty in ppm")
+    parser.add_argument("--kalman-validation-sample-count", type=int, default=DEFAULT_DRIFT_MODEL_CONFIG.kalman_validation_sample_count, help="Sample count for Kalman monotonicity and local-rate validation")
     parser.add_argument("--min-anchor-duration", type=float, default=DEFAULT_ANCHOR_SELECTION_CONFIG.min_anchor_duration_seconds, help="Minimum speech-segment duration in seconds for anchor candidates")
     parser.add_argument("--base-anchor-duration", type=float, default=None, help=f"Starting anchor duration in seconds before adaptive quality scaling (default: clamp {DEFAULT_ANCHOR_SELECTION_CONFIG.base_anchor_duration_seconds} within min/max bounds)")
     parser.add_argument("--max-anchor-duration", type=float, default=DEFAULT_ANCHOR_SELECTION_CONFIG.max_anchor_duration_seconds, help="Maximum duration in seconds after adaptive anchor-duration scaling")
@@ -171,6 +209,43 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
     except ValueError as exc:
         print(f"error: invalid anchor selection options: {exc}", file=sys.stderr)
         return EXIT_USAGE_ERROR
+    try:
+        drift_model_config = DriftModelConfig(
+            drift_model=args.drift_model,
+            allow_nonlinear_drift=args.allow_nonlinear_drift,
+            min_anchors_for_piecewise=args.min_anchors_for_piecewise,
+            min_anchors_per_segment=args.min_anchors_per_segment,
+            max_breakpoints=args.max_breakpoints,
+            min_residual_improvement_ms=args.min_residual_improvement_ms,
+            min_relative_residual_improvement=args.min_relative_residual_improvement,
+            max_abs_rate_deviation_ppm=args.max_abs_rate_deviation_ppm,
+            max_rate_change_ppm=args.max_rate_change_ppm,
+            warn_abs_rate_deviation_ppm=args.warn_abs_rate_deviation_ppm,
+            max_anchor_gap_seconds=args.max_anchor_gap_seconds,
+            min_anchors_for_spline=args.min_anchors_for_spline,
+            spline_knot_source=args.spline_knot_source,
+            min_knot_spacing_seconds=args.min_knot_spacing_seconds,
+            spline_validation_sample_count=args.spline_validation_sample_count,
+            min_anchors_for_kalman=args.min_anchors_for_kalman,
+            kalman_process_offset_noise_ms=args.kalman_process_offset_noise_ms,
+            kalman_process_rate_noise_ppm=args.kalman_process_rate_noise_ppm,
+            kalman_observation_noise_ms=args.kalman_observation_noise_ms,
+            kalman_initial_offset_uncertainty_ms=args.kalman_initial_offset_uncertainty_ms,
+            kalman_initial_rate_uncertainty_ppm=args.kalman_initial_rate_uncertainty_ppm,
+            kalman_validation_sample_count=args.kalman_validation_sample_count,
+        )
+    except ValueError as exc:
+        print(f"error: invalid drift model options: {exc}", file=sys.stderr)
+        return EXIT_USAGE_ERROR
+    anchor_selection_metadata = anchor_selection_config.as_dict()
+    drift_model_selection_metadata = drift_model_config.as_dict()
+    configuration_snapshot = None
+    if args.verbose_report:
+        configuration_snapshot = {
+            "drift_model_selection": drift_model_selection_metadata,
+            "anchor_selection": anchor_selection_metadata,
+        }
+
     selected_pyannote_model = args.pyannote_model or DEFAULT_PYANNOTE_MODEL
     if args.pyannote_model is not None and args.vad_strategy != "pyannote":
         print("error: --pyannote-model is only valid when --vad-strategy pyannote is selected", file=sys.stderr)
@@ -258,7 +333,7 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
                     initial_offset_seconds=offset_estimate.offset_seconds,
                 )
                 LOGGER.debug("%s: completed drift anchor matching", track.name)
-                drift_estimate = fit_linear_drift_model(drift_matches, local_duration_seconds=track.duration_seconds)
+                drift_estimate = select_drift_model(drift_matches, drift_model_config, local_duration_seconds=track.duration_seconds)
                 LOGGER.debug("%s: drift_matches=%d drift_estimated=%s", track.name, len(drift_matches), drift_estimate is not None)
             progress.update(f"{track.name}: drift estimation completed")
 
@@ -297,7 +372,7 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
                         drift_estimate=drift_estimate,
                         stretch_method=args.stretch_method,
                     )
-                except RuntimeError as exc:
+                except (RuntimeError, ValueError) as exc:
                     print(f'error: {exc}', file=sys.stderr)
                     LOGGER.exception("Global correction failed")
                     return EXIT_RUNTIME_ERROR
@@ -345,12 +420,29 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
                     "normalize_output": args.normalize_output,
                     "stretch_method": args.stretch_method,
                     "stretch_ratio_warning_threshold": args.stretch_ratio_warning_threshold,
+                    "render_method": global_correction.render_method,
+                    "monotonicity_check": None if global_correction.monotonicity_check is None else {
+                        "passed": global_correction.monotonicity_check.passed,
+                        "sample_count": global_correction.monotonicity_check.sample_count,
+                        "epsilon_seconds": global_correction.monotonicity_check.epsilon_seconds,
+                        "min_step_seconds": global_correction.monotonicity_check.min_step_seconds,
+                        "message": global_correction.monotonicity_check.message,
+                    },
+                    "unsupported_regions": [
+                        {
+                            "start_seconds": region.start_seconds,
+                            "end_seconds": region.end_seconds,
+                            "reason": region.reason,
+                        }
+                        for region in global_correction.unsupported_regions
+                    ],
                 },
                 "vad": {
                     "strategy": args.vad_strategy,
                     "pyannote_model": selected_pyannote_model if args.vad_strategy == "pyannote" else None,
                 },
-                "anchor_selection": anchor_selection_config.as_dict(),
+                "anchor_selection": anchor_selection_metadata,
+                "drift_model_selection": drift_model_selection_metadata,
                 "local_adjustment": None if local_adjustment is None else {
                     "events": [
                         {
@@ -367,7 +459,7 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
             processed_tracks.append(track)
             progress.update(f"{track.name}: report details collected")
 
-        report = build_phase5_report(
+        report = build_alignment_diagnostics_report(
             master=master,
             tracks=processed_tracks,
             analysis_sample_rate=args.analysis_sample_rate,
@@ -377,10 +469,13 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
                 "strategy": args.vad_strategy,
                 "pyannote_model": selected_pyannote_model if args.vad_strategy == "pyannote" else None,
             },
-            anchor_selection_metadata=anchor_selection_config.as_dict(),
+            anchor_selection_metadata=anchor_selection_metadata,
+            verbose_report=args.verbose_report,
+            configuration_snapshot=configuration_snapshot,
         )
+        report["analysis"]["drift_model_selection"] = drift_model_selection_metadata
         report_path = write_sync_report(report, args.out)
-        markers_path = write_sync_markers_csv(report, args.out)
+        markers_path = write_sync_markers_csv(report, args.out, track_details=track_details)
         warnings_path = write_warnings_text(report, args.out)
         progress.update("Reports generated")
         LOGGER.info("Completed alignment run")

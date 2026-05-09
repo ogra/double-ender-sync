@@ -3,12 +3,12 @@ from pathlib import Path
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QMimeData, QUrl
+from PySide6.QtCore import QMimeData, Qt, QUrl
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from double_ender_sync.api import AlignmentOptions
+from double_ender_sync.api import AlignmentOptions, build_cli_argv
 from double_ender_sync.analysis.vad import DEFAULT_PYANNOTE_MODEL, MODERN_PYANNOTE_SEGMENTATION_MODEL
-from double_ender_sync.config import DEFAULT_ANCHOR_SELECTION_CONFIG
+from double_ender_sync.config import DEFAULT_ANCHOR_SELECTION_CONFIG, DEFAULT_DRIFT_MODEL_CONFIG
 from double_ender_sync.gui import AlignmentWorker, MainWindow, extract_audio_paths
 
 
@@ -133,6 +133,15 @@ def test_extract_audio_paths_accepts_wav_and_aiff(tmp_path) -> None:
     assert str(txt) not in paths
 
 
+def test_gui_displays_package_version_in_corner() -> None:
+    _app()
+    window = MainWindow(lang="en")
+
+    assert window.version_label.text() == "v0.2.2"
+    assert window.version_label.alignment() & Qt.AlignRight
+    assert window.version_label.alignment() & Qt.AlignBottom
+
+
 def test_gui_vad_selector_includes_supported_backends() -> None:
     _app()
     window = MainWindow(lang="en")
@@ -227,3 +236,175 @@ def test_gui_uses_shared_anchor_selection_defaults(monkeypatch, tmp_path) -> Non
     window.run()
 
     assert captured["options"].anchor_selection == DEFAULT_ANCHOR_SELECTION_CONFIG
+
+
+def test_gui_drift_gate_default_matches_shared_config() -> None:
+    _app()
+    window = MainWindow(lang="en")
+
+    assert window.allow_nonlinear_drift_checkbox.isChecked() is DEFAULT_DRIFT_MODEL_CONFIG.allow_nonlinear_drift
+
+
+def test_gui_auto_enables_nonlinear_gate_for_explicit_nonlinear_model(monkeypatch, tmp_path) -> None:
+    _app()
+    window = MainWindow(lang="en")
+    captured: dict[str, AlignmentOptions] = {}
+
+    window.master_input.setText("master.wav")
+    window.track_list.addItem("speaker.wav")
+    window.output_input.setText(str(tmp_path))
+    spline_index = window.drift_model_input.findData("spline")
+    window.drift_model_input.setCurrentIndex(spline_index)
+    monkeypatch.setattr(window, "_start_worker", lambda options: captured.setdefault("options", options))
+
+    window.run()
+
+    assert window.allow_nonlinear_drift_checkbox.isChecked() is True
+    assert captured["options"].drift_model == "spline"
+    assert captured["options"].allow_nonlinear_drift is True
+    assert "--allow-nonlinear-drift" in build_cli_argv(captured["options"])
+
+
+def test_gui_resets_explicit_nonlinear_model_when_gate_is_disabled(monkeypatch, tmp_path) -> None:
+    _app()
+    window = MainWindow(lang="en")
+    captured: dict[str, AlignmentOptions] = {}
+
+    window.master_input.setText("master.wav")
+    window.track_list.addItem("speaker.wav")
+    window.output_input.setText(str(tmp_path))
+    kalman_index = window.drift_model_input.findData("kalman")
+    window.drift_model_input.setCurrentIndex(kalman_index)
+    assert window.allow_nonlinear_drift_checkbox.isChecked() is True
+
+    window.allow_nonlinear_drift_checkbox.setChecked(False)
+    monkeypatch.setattr(window, "_start_worker", lambda options: captured.setdefault("options", options))
+
+    window.run()
+
+    assert window.drift_model_input.currentData() == "auto"
+    assert captured["options"].drift_model == "auto"
+    assert captured["options"].allow_nonlinear_drift is False
+    assert "--allow-nonlinear-drift" not in build_cli_argv(captured["options"])
+
+
+def test_gui_rejects_invalid_shared_options_before_starting_worker(monkeypatch, tmp_path) -> None:
+    _app()
+    window = MainWindow(lang="en")
+    errors: list[str] = []
+    started: list[AlignmentOptions] = []
+
+    window.master_input.setText("master.wav")
+    window.track_list.addItem("speaker.wav")
+    window.output_input.setText(str(tmp_path))
+
+    def _raise_invalid_options(_options):
+        raise ValueError("invalid shared options")
+
+    monkeypatch.setattr("double_ender_sync.gui.build_cli_argv", _raise_invalid_options)
+    monkeypatch.setattr(window, "_show_error", errors.append)
+    monkeypatch.setattr(window, "_start_worker", started.append)
+
+    window.run()
+
+    assert errors == ["invalid shared options"]
+    assert started == []
+
+
+def test_gui_max_breakpoints_accepts_shared_non_negative_values(monkeypatch, tmp_path) -> None:
+    _app()
+    window = MainWindow(lang="en")
+    captured: dict[str, AlignmentOptions] = {}
+
+    window.master_input.setText("master.wav")
+    window.track_list.addItem("speaker.wav")
+    window.output_input.setText(str(tmp_path))
+    window.allow_nonlinear_drift_checkbox.setChecked(True)
+    window.max_breakpoints_input.setValue(12)
+    monkeypatch.setattr(window, "_start_worker", lambda options: captured.setdefault("options", options))
+
+    window.run()
+
+    assert captured["options"].max_breakpoints == 12
+    assert "--max-breakpoints" in build_cli_argv(captured["options"])
+
+
+def test_gui_anchor_minimums_accept_large_shared_values(monkeypatch, tmp_path) -> None:
+    _app()
+    window = MainWindow(lang="en")
+    captured: dict[str, AlignmentOptions] = {}
+
+    window.master_input.setText("master.wav")
+    window.track_list.addItem("speaker.wav")
+    window.output_input.setText(str(tmp_path))
+    window.allow_nonlinear_drift_checkbox.setChecked(True)
+    window.min_anchors_for_piecewise_input.setValue(202)
+    window.min_anchors_per_segment_input.setValue(101)
+    monkeypatch.setattr(window, "_start_worker", lambda options: captured.setdefault("options", options))
+
+    window.run()
+
+    assert captured["options"].min_anchors_for_piecewise == 202
+    assert captured["options"].min_anchors_per_segment == 101
+    argv = build_cli_argv(captured["options"])
+    assert "--min-anchors-for-piecewise" in argv
+    assert "202" in argv
+    assert "--min-anchors-per-segment" in argv
+    assert "101" in argv
+
+
+def test_gui_english_kalman_label_is_clear() -> None:
+    _app()
+    window = MainWindow(lang="en")
+
+    kalman_index = window.drift_model_input.findData("kalman")
+
+    assert window.drift_model_input.itemText(kalman_index) == "Kalman (research/experimental)"
+
+
+def test_gui_max_anchor_gap_unit_is_in_label_not_suffix() -> None:
+    _app()
+    window = MainWindow(lang="en")
+
+    assert window.t("gui.max_anchor_gap_seconds") == "Max trusted anchor gap (s)"
+    assert window.max_anchor_gap_input.suffix() == ""
+    assert window.max_anchor_gap_input.specialValueText() == "Disabled"
+
+
+def test_gui_japanese_max_anchor_gap_unit_is_in_label_not_suffix() -> None:
+    _app()
+    window = MainWindow(lang="ja")
+
+    assert window.t("gui.max_anchor_gap_seconds") == "信頼済みアンカー最大間隔（秒）"
+    assert window.max_anchor_gap_input.suffix() == ""
+    assert window.max_anchor_gap_input.specialValueText() == "無効"
+
+
+def test_gui_forwards_shared_drift_model_options(monkeypatch, tmp_path) -> None:
+    _app()
+    window = MainWindow(lang="en")
+    captured: dict[str, AlignmentOptions] = {}
+
+    window.master_input.setText("master.wav")
+    window.track_list.addItem("speaker.wav")
+    window.output_input.setText(str(tmp_path))
+    piecewise_index = window.drift_model_input.findData("piecewise_linear")
+    window.drift_model_input.setCurrentIndex(piecewise_index)
+    assert window.drift_model_input.findData("spline") >= 0
+    assert window.drift_model_input.findData("kalman") >= 0
+    window.allow_nonlinear_drift_checkbox.setChecked(True)
+    window.max_breakpoints_input.setValue(2)
+    window.min_anchors_per_segment_input.setValue(4)
+    window.max_anchor_gap_input.setValue(123.5)
+    window.verbose_report_checkbox.setChecked(True)
+    monkeypatch.setattr(window, "_start_worker", lambda options: captured.setdefault("options", options))
+
+    window.run()
+
+    assert captured["options"].drift_model == "piecewise_linear"
+    assert captured["options"].allow_nonlinear_drift is True
+    assert captured["options"].max_breakpoints == 2
+    assert captured["options"].min_anchors_for_piecewise == 8
+    assert captured["options"].min_anchors_per_segment == 4
+    assert captured["options"].max_anchor_gap_seconds == 123.5
+    assert captured["options"].verbose_report is True

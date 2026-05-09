@@ -101,6 +101,8 @@ pip install -e ".[dev]"
 pytest
 ```
 
+Synthetic drift fixtures for tests live in `tests/helpers/synthetic_drift.py`; use them instead of duplicating anchor-generation logic when adding offset, constant-drift, piecewise-drift, spline, noisy-anchor, sparse-anchor, or dropout-gap regressions. For manual calibration, see [Calibration sources and synthetic drift fixtures](docs/calibration.md) and generate temporary demo packs with `double-ender-sync-generate-demo-pack`. Generated WAVs, private podcast recordings, and private calibration reports must not be committed to this repository.
+
 If you need pitch-preserving stretch during development, install it explicitly:
 
 ```bash
@@ -112,6 +114,16 @@ After installation, the command is available as:
 ```bash
 double-ender-sync --help
 ```
+
+Print the installed version from the CLI with either long or short version flags:
+
+```bash
+double-ender-sync --version
+double-ender-sync -V
+# version 0.2.2
+```
+
+The same version is exposed to Python callers through the package/API (`double_ender_sync.__version__` and `double_ender_sync.api.get_version()` both return `0.2.2`) and is shown in the GUI footer as `v0.2.2`.
 
 ## Quick start
 
@@ -147,6 +159,10 @@ output/
   warnings.txt
 ```
 
+`sync-report.json` is an alignment diagnostics report. Its top-level metadata
+uses `report_type: "alignment_diagnostics"` and `schema_version: "1"`, followed
+by `analysis`, `master`, `tracks`, `warnings`, and `errors` sections.
+
 ## Useful options
 
 - `--analysis-sample-rate 16000`  
@@ -162,7 +178,7 @@ output/
 - `--stretch-ratio-auto-continue`  
   Skip interactive confirmation and continue even when stretch ratio warning threshold is exceeded.
 - `--stretch-method {resample,pitch_preserving}`  
-  Global correction method. `resample` is default. `pitch_preserving` uses librosa and prioritizes pitch stability for larger drift corrections.
+  Global correction method. `resample` is default and now renders through the general monotonic time-mapping interface for future drift models while preserving the linear default/control behavior, including tracks whose original sample rate differs from the master sample rate. `pitch_preserving` uses librosa, prioritizes pitch stability for larger drift corrections, and currently supports only `LinearDrift`; unsupported renderer/model combinations fail clearly rather than silently producing audio.
 - `--min-anchor-duration 1.0` / `--base-anchor-duration 4.0` / `--max-anchor-duration 8.0`
   Configure the adaptive speech-derived anchor duration policy shared by CLI/API/GUI runs. High-SNR, distinctive material stays near the base duration; noisier or spectrally flatter material can extend toward the maximum instead of using a globally fixed clip length. If `--base-anchor-duration` is omitted, the CLI derives an effective default by clamping 4.0 seconds into the configured min/max bounds, so max-only or min-only tuning remains valid. Explicit base values are validated against the min/max bounds and fail clearly when inconsistent.
 - `--min-snr-db <db>` / `--spectral-flatness-threshold <0.0-1.0>`
@@ -173,6 +189,24 @@ output/
   Configure the minimum target budget for short recordings and the safety cap for selected anchor candidates. Use `none` for `--max-anchor-count` only for debugging/unbounded experiments.
 - `--stratified-bin-count <count>` / `--anchors-per-bin <count>`
   Override the automatic timeline stratification used for drift-anchor selection. By default, the selector derives roughly one-minute bins bounded by the target anchor budget, picks top candidates per bin first, then fills the remaining budget globally; sparse coverage and long unanchored spans are reported as warnings rather than hidden.
+- `--drift-model {auto,linear,piecewise_linear,spline,kalman}`
+  Select the drift model policy. The default `auto` keeps `LinearDrift` as the compatibility/control model while `--allow-nonlinear-drift` is disabled. `linear` always requests the linear control model. `piecewise_linear` and `spline` are experimental and require `--allow-nonlinear-drift`; `kalman` is research/experimental and is evaluated only when explicitly requested with `--allow-nonlinear-drift`. Piecewise fitting uses continuous segments, spline fitting uses monotonic cubic PCHIP interpolation through validated support knots, and Kalman fitting models offset/rate as noisy latent states smoothed across anchors. These richer models are accepted only when anchor coverage, residual improvement, monotonicity, and local-rate plausibility checks pass. Reports preserve legacy `offset_seconds` / `stretch_ratio` fields and add `model_type`, `model_version`, `model_selection_policy`, `model_parameters`, `breakpoints`, `segments`, `segment_residual_summaries`, `knots`, `knot_residual_summaries` with per-knot anchor counts and residual statistics, `fallback_reason`, `local_rate_summary`, and Kalman-specific `uncertainty_summary`, `covariance_summary`, `uncertainty_bands`, `state_points`, and `anchor_residuals_ms` diagnostics. The renderer API supports strictly monotonic, invertible `DriftModel` mappings; regions outside model support and detected internal master-time gaps are padded with silence and exposed in `global_correction.unsupported_regions`.
+- `--allow-nonlinear-drift`
+  Enable experimental non-linear drift candidate evaluation and explicit research Kalman smoothing. Disabled by default; when disabled, `auto` does not attempt piecewise, spline, or Kalman fitting and reports that the safety gate retained the linear control model. Even when enabled, `auto` does not select the Kalman smoother; choose `--drift-model kalman` explicitly for research experiments.
+- `--min-anchors-for-piecewise 6` / `--min-anchors-per-segment 3` / `--max-breakpoints 1`
+  Configure conservative piecewise-linear breakpoint search. Sparse-anchor recordings fall back to `LinearDrift` with an explicit `fallback_reason`.
+- `--min-anchors-for-spline 6` / `--spline-knot-source {auto,piecewise_boundaries,anchors}` / `--min-knot-spacing-seconds 30.0` / `--spline-validation-sample-count 1024`
+  Configure monotonic cubic spline fitting. `auto` prefers accepted piecewise boundaries when available and otherwise uses confidence-filtered, spacing-decimated anchors. Reports keep the configured knot-source vocabulary (`anchors`, `piecewise_boundaries`, or `auto` resolution) and expose `model_parameters.knot_decimation_applied` when anchor spacing decimation was used. Explicit `spline` runs with `piecewise_boundaries` prefit a piecewise model for knot support without selecting it as the final model. Spline candidates are rejected with an explicit `fallback_reason` if PCHIP construction, monotonicity, derivative/rate bounds, or residual-improvement checks fail.
+- `--min-anchors-for-kalman 5` / `--kalman-process-offset-noise-ms 5.0` / `--kalman-process-rate-noise-ppm 50.0` / `--kalman-observation-noise-ms 30.0`
+  Configure the Phase 5 state-space / Kalman RTS smoother. This feature is **research/experimental**, not a normal-user default: it models `offset_seconds = master_time - local_time` and `rate_deviation = local_rate - 1.0`, scales observation noise from anchor confidence, emits uncertainty/covariance diagnostics, and falls back to `LinearDrift` with a `fallback_reason` when anchor coverage, monotonicity, rate plausibility, or residual-improvement checks fail.
+- `--kalman-initial-offset-uncertainty-ms 250.0` / `--kalman-initial-rate-uncertainty-ppm 500.0` / `--kalman-validation-sample-count 1024`
+  Configure initial uncertainty and validation density for explicit Kalman research runs. These values are reportable so calibration experiments can compare noise assumptions without hiding uncertainty.
+- `--min-residual-improvement-ms 5.0` / `--min-relative-residual-improvement 0.2`
+  Require both absolute and relative median residual improvement before selecting a richer model; worst-case residuals must also improve.
+- `--max-abs-rate-deviation-ppm 1000` / `--max-rate-change-ppm 500` / `--warn-abs-rate-deviation-ppm 200`
+  Bound accepted local rates plus adjacent segment, knot, and Kalman mapping-rate changes for piecewise, spline, and Kalman models. Fits outside hard bounds fall back to a simpler model; accepted fits above the warning bound emit report warnings for manual inspection.
+- `--verbose-report`
+  Write the full debug form of `sync-report.json`. Default reports keep compact, editor-facing fields: track metadata, model metadata, linear compatibility fields (`offset_seconds`, `stretch_ratio`, anchor/residual metrics), warning/error lists, unsupported-region summaries, breakpoint/knot/state-point/anchor-residual counts, and compact summaries for speech segments, anchor candidates, drift-anchor matches, anchor-selection diagnostics, drift-fit diagnostics, and local adjustment. Default reports omit the heavyweight detail arrays and diagnostic payloads: `speech_segments`, `anchor_candidates`, full `drift_anchor_matches`, full `anchor_selection_diagnostics`, full `drift_fit_diagnostics`, nested `drift_estimate`, detailed model diagnostics, full `breakpoints`, `knots`, `state_points`, `anchor_residuals`, and full `unsupported_regions`. Verbose reports add those detailed fields plus an effective configuration snapshot under `analysis.configuration_snapshot`. Use this for model-selection debugging and calibration comparisons; the same option is available through `AlignmentOptions.verbose_report` and the GUI advanced settings so CLI/API/GUI runs share the same report semantics.
 - `--debug`  
   Enable debug logging to identify which stage is running when resource usage spikes.
 - `--vad-strategy {silero,adaptive_rms,rms,webrtc,pyannote}`  
@@ -329,6 +363,12 @@ options = AlignmentOptions(
     local_adjust_enabled=False,
     normalize_output=False,
     anchor_selection=AnchorSelectionConfig(anchor_density_per_minute=1.0, max_anchor_count=120),
+    drift_model="auto",
+    allow_nonlinear_drift=False,
+    max_breakpoints=1,
+    min_anchors_for_piecewise=6,
+    min_anchors_per_segment=3,
+    verbose_report=False,
 )
 
 exit_code = run_alignment(options)
@@ -336,7 +376,7 @@ if exit_code != 0:
     raise RuntimeError(f"alignment failed with exit code {exit_code}")
 ```
 
-`run_alignment(...)` returns the same exit code semantics as the CLI `main(...)`. Anchor-selection options use the same `AnchorSelectionConfig` defaults as CLI and GUI runs.
+`run_alignment(...)` returns the same exit code semantics as the CLI `main(...)`. Anchor-selection and drift-model options use the same shared configuration defaults as CLI and GUI runs; `drift_model="auto"` still resolves to the linear control path unless `allow_nonlinear_drift=True` is set explicitly.
 
 
 ## Translation operations rules

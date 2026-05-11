@@ -3,11 +3,20 @@ import logging
 
 import numpy as np
 
+from double_ender_sync.alignment.stretch import RubberbandStretcher, Stretcher, VALID_STRETCH_METHODS, make_stretcher
 from double_ender_sync.analysis.drift import DriftModel, LinearDrift
 from double_ender_sync.audio.resample import resample_to_sample_rate
 from double_ender_sync.types import AudioTrack
 
 LOGGER = logging.getLogger(__name__)
+
+_PITCH_PRESERVING_STRETCH_METHODS: frozenset[str] = frozenset({"pitch_preserving", "rubberband"})
+_SOXR_STRETCH_METHODS: frozenset[str] = frozenset({"soxr"})
+# Methods that operate on the full input array and are routed through
+# _place_rendered_samples_on_master_timeline (not the chunked np.interp loop).
+_WHOLE_ARRAY_STRETCH_METHODS: frozenset[str] = _PITCH_PRESERVING_STRETCH_METHODS | _SOXR_STRETCH_METHODS
+# Methods that support non-linear drift via pyrubberband.timemap_stretch.
+_TIMEMAP_CAPABLE_METHODS: frozenset[str] = frozenset({"rubberband"})
 
 
 @dataclass
@@ -78,8 +87,18 @@ def apply_global_time_correction(
     if track.original_samples is None:
         raise ValueError("track.original_samples is required for global correction")
 
-    if stretch_method not in {"resample", "pitch_preserving"}:
-        raise ValueError("stretch_method must be one of: resample, pitch_preserving")
+    if stretch_method not in VALID_STRETCH_METHODS:
+        raise ValueError(
+            f"stretch_method must be one of: {', '.join(sorted(VALID_STRETCH_METHODS))}; got {stretch_method!r}"
+        )
+
+    # Whole-array stretchers ("pitch_preserving", "rubberband", "soxr") are routed through
+    # the Stretcher abstraction before placement on the master timeline.
+    # The "resample" chunked loop handles its own np.interp directly and is not yet routed
+    # through the Stretcher abstraction (see docs/plans/improve-resampling-quality-plan.md).
+    whole_array_stretcher: Stretcher | None = (
+        make_stretcher(stretch_method) if stretch_method in _WHOLE_ARRAY_STRETCH_METHODS else None
+    )
 
     mono_source = _to_mono(track.original_samples)
 
@@ -99,7 +118,7 @@ def apply_global_time_correction(
             master_sample_rate=master.sample_rate,
             offset_seconds=drift_estimate.offset_seconds,
             stretch_ratio=drift_estimate.stretch_ratio,
-            stretch_method=stretch_method,
+            stretcher=whole_array_stretcher,
         )
         supported_end_seconds = drift_estimate.map_local_to_master(track.duration_seconds)
         return GlobalAlignmentResult(
@@ -108,7 +127,7 @@ def apply_global_time_correction(
             output_duration_seconds=master.duration_seconds,
             stretch_ratio=drift_estimate.stretch_ratio,
             offset_seconds=drift_estimate.offset_seconds,
-            render_method="linear_pitch_preserving" if stretch_method == "pitch_preserving" else "linear_resample",
+            render_method=f"linear_{stretch_method}" if stretch_method in _WHOLE_ARRAY_STRETCH_METHODS else "linear_resample",
             unsupported_regions=_unsupported_regions_for_supported_interval(
                 0.0,
                 master.duration_seconds,
@@ -123,8 +142,37 @@ def apply_global_time_correction(
             ),
         )
 
-    if stretch_method == "pitch_preserving":
-        raise ValueError("pitch_preserving rendering currently supports LinearDrift only")
+    if stretch_method in _TIMEMAP_CAPABLE_METHODS:
+        assert isinstance(whole_array_stretcher, RubberbandStretcher)
+        inverse_map = build_inverse_time_map(
+            drift_model=drift_estimate,
+            local_duration_seconds=track.duration_seconds,
+        )
+        output = render_with_rubberband_timemap(
+            source_samples=mono_source,
+            source_sample_rate=track.sample_rate,
+            output_duration_seconds=master.duration_seconds,
+            output_sample_rate=master.sample_rate,
+            inverse_time_map=inverse_map,
+            stretcher=whole_array_stretcher,
+        )
+        return GlobalAlignmentResult(
+            output_samples=output,
+            output_sample_rate=master.sample_rate,
+            output_duration_seconds=master.duration_seconds,
+            stretch_ratio=None,
+            offset_seconds=None,
+            render_method="timemap_rubberband",
+            unsupported_regions=_unsupported_regions_for_inverse_map(
+                0.0,
+                master.duration_seconds,
+                inverse_map,
+            ),
+            monotonicity_check=inverse_map.monotonicity_check,
+        )
+
+    if stretch_method in _WHOLE_ARRAY_STRETCH_METHODS and stretch_method not in _TIMEMAP_CAPABLE_METHODS:
+        raise ValueError(f"{stretch_method!r} rendering currently supports LinearDrift only")
 
     inverse_map = build_inverse_time_map(
         drift_model=drift_estimate,
@@ -187,15 +235,15 @@ def _render_linear_stretch_on_master_timeline(
     master_sample_rate: int,
     offset_seconds: float,
     stretch_ratio: float,
-    stretch_method: str,
+    stretcher: Stretcher | None,
 ) -> np.ndarray:
     output_length = int(round(master_duration_seconds * master_sample_rate))
     output = np.zeros(output_length, dtype=np.float32)
     if output_length == 0 or source_samples.size == 0:
         return output
 
-    if stretch_method == "pitch_preserving":
-        stretched = _stretch_samples(source_samples, stretch_ratio, stretch_method)
+    if stretcher is not None:
+        stretched = stretcher.stretch_by_ratio(source_samples, stretch_ratio, sample_rate=source_sample_rate)
         return _place_rendered_samples_on_master_timeline(
             rendered_samples=stretched,
             rendered_sample_rate=source_sample_rate,
@@ -441,6 +489,104 @@ def render_with_inverse_time_map(
     return output
 
 
+def _build_rubberband_time_map(
+    n_src: int,
+    source_sample_rate: int,
+    local_times_seconds: np.ndarray,
+    master_times_seconds: np.ndarray,
+) -> list[tuple[int, int]]:
+    """Build a pyrubberband time_map from an InverseTimeMap's time arrays.
+
+    Converts local/master time correspondences into ``(src_sample, dst_sample)``
+    integer pairs at ``source_sample_rate``.  The dst origin is the supported
+    master start, so the caller places the rubberband output at
+    ``supported_master_start_seconds`` on the output timeline.
+
+    Deduplicates consecutive equal src positions (from rounding when stretch
+    ratio ≈ 1) and fixes endpoints to ``(0, entries[0][1])`` and
+    ``(n_src, n_dst)`` as required by pyrubberband.
+    """
+    master_start = float(master_times_seconds[0])
+    supported_duration = float(master_times_seconds[-1]) - master_start
+    n_dst = max(1, int(round(supported_duration * source_sample_rate)))
+
+    entries: list[tuple[int, int]] = []
+    prev_src = -1
+    for local_t, master_t in zip(local_times_seconds.tolist(), master_times_seconds.tolist()):
+        src = min(int(round(local_t * source_sample_rate)), n_src)
+        dst = min(int(round((master_t - master_start) * source_sample_rate)), n_dst)
+        if src == prev_src:
+            continue
+        entries.append((src, dst))
+        prev_src = src
+
+    if not entries:
+        return [(0, 0), (n_src, n_dst)]
+
+    if entries[0][0] != 0:
+        entries.insert(0, (0, entries[0][1]))
+
+    # Build result with strictly increasing dst.  Skip (do not increment)
+    # intermediate entries whose dst is non-increasing after rounding/clamping;
+    # cap intermediate dst at n_dst - 1 so the final (n_src, n_dst) endpoint
+    # is always the largest value and its position is never pushed past n_dst.
+    result: list[tuple[int, int]] = [entries[0]]
+    for src, dst in entries[1:]:
+        if src == n_src:
+            break  # final endpoint is appended explicitly below
+        dst_capped = min(dst, n_dst - 1)
+        if dst_capped > result[-1][1]:
+            result.append((src, dst_capped))
+    result.append((n_src, n_dst))
+
+    return result
+
+
+def render_with_rubberband_timemap(
+    source_samples: np.ndarray,
+    source_sample_rate: int,
+    output_duration_seconds: float,
+    output_sample_rate: int,
+    inverse_time_map: InverseTimeMap,
+    stretcher: RubberbandStretcher,
+) -> np.ndarray:
+    """Render source audio using rubberband non-uniform time stretching.
+
+    Builds a ``pyrubberband`` time_map from the inverse time map, stretches
+    the source in one pass, then places the result on the master timeline at
+    ``supported_master_start_seconds``.  Regions outside the model support
+    remain silent.
+    """
+    output_length = int(round(output_duration_seconds * output_sample_rate))
+    output = np.zeros(output_length, dtype=np.float32)
+    if output_length == 0 or source_samples.size == 0:
+        return output
+
+    time_map = _build_rubberband_time_map(
+        n_src=source_samples.shape[0],
+        source_sample_rate=source_sample_rate,
+        local_times_seconds=inverse_time_map.local_times_seconds,
+        master_times_seconds=inverse_time_map.master_times_seconds,
+    )
+    stretched = stretcher.stretch_by_timemap(source_samples, time_map, sample_rate=source_sample_rate)
+    _place_rendered_samples_on_master_timeline(
+        rendered_samples=stretched,
+        rendered_sample_rate=source_sample_rate,
+        master_sample_rate=output_sample_rate,
+        offset_seconds=inverse_time_map.supported_master_start_seconds,
+        output=output,
+    )
+    # pyrubberband stretches source audio continuously across internal master-time
+    # gaps, producing distorted audio where silence is required.  Explicitly zero
+    # out every unsupported interval so the renderer contract is honoured.
+    for region in inverse_time_map.unsupported_regions:
+        gap_start = max(0, int(round(region.start_seconds * output_sample_rate)))
+        gap_end = min(output_length, int(round(region.end_seconds * output_sample_rate)))
+        if gap_start < gap_end:
+            output[gap_start:gap_end] = 0.0
+    return output
+
+
 def _unsupported_regions_for_inverse_map(
     master_start_seconds: float,
     master_end_seconds: float,
@@ -483,48 +629,3 @@ def _to_mono(samples: np.ndarray) -> np.ndarray:
     if samples.ndim == 1:
         return samples.astype(np.float32, copy=False)
     return np.mean(samples, axis=1, dtype=np.float32)
-
-
-def _stretch_samples(samples: np.ndarray, stretch_ratio: float, stretch_method: str) -> np.ndarray:
-    if stretch_method == "resample":
-        return _resample_by_ratio(samples, stretch_ratio)
-    if stretch_method == "pitch_preserving":
-        return _pitch_preserving_time_stretch(samples, stretch_ratio)
-    raise ValueError("stretch_method must be one of: resample, pitch_preserving")
-
-
-
-def _resample_by_ratio(samples: np.ndarray, stretch_ratio: float) -> np.ndarray:
-    if samples.size == 0:
-        return samples.astype(np.float32, copy=False)
-    target_len = max(1, int(round(samples.shape[0] * stretch_ratio)))
-    source_positions = np.linspace(0, samples.shape[0] - 1, num=samples.shape[0], dtype=np.float64)
-    target_positions = np.linspace(0, samples.shape[0] - 1, num=target_len, dtype=np.float64)
-    stretched = np.interp(target_positions, source_positions, samples.astype(np.float64, copy=False))
-    return stretched.astype(np.float32, copy=False)
-
-
-def _pitch_preserving_time_stretch(samples: np.ndarray, stretch_ratio: float) -> np.ndarray:
-    if samples.size == 0:
-        return samples.astype(np.float32, copy=False)
-
-    import importlib
-
-    try:
-        librosa = importlib.import_module("librosa")
-    except ModuleNotFoundError as exc:
-        raise RuntimeError(
-            "pitch_preserving stretch requires librosa. Install with: pip install \"double-ender-sync[stretch]\""
-        ) from exc
-    rate = 1.0 / stretch_ratio
-    stretched = librosa.effects.time_stretch(samples.astype(np.float32, copy=False), rate=rate)
-
-    target_len = max(1, int(round(samples.shape[0] * stretch_ratio)))
-    if stretched.shape[0] > target_len:
-        stretched = stretched[:target_len]
-    elif stretched.shape[0] < target_len:
-        pad = np.zeros(target_len - stretched.shape[0], dtype=stretched.dtype)
-        stretched = np.concatenate([stretched, pad])
-
-    LOGGER.debug("pitch_preserving stretch applied rate=%.8f target_len=%d", rate, target_len)
-    return stretched.astype(np.float32, copy=False)

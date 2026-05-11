@@ -137,7 +137,7 @@ def test_gui_displays_package_version_in_corner() -> None:
     _app()
     window = MainWindow(lang="en")
 
-    assert window.version_label.text() == "v0.2.2"
+    assert window.version_label.text() == "v0.2.3"
     assert window.version_label.alignment() & Qt.AlignRight
     assert window.version_label.alignment() & Qt.AlignBottom
 
@@ -408,3 +408,87 @@ def test_gui_forwards_shared_drift_model_options(monkeypatch, tmp_path) -> None:
     assert captured["options"].min_anchors_per_segment == 4
     assert captured["options"].max_anchor_gap_seconds == 123.5
     assert captured["options"].verbose_report is True
+
+
+def test_gui_stretch_method_combo_shows_all_methods() -> None:
+    _app()
+    window = MainWindow(lang="en")
+    values = [window.stretch_method_combo.itemData(i) for i in range(window.stretch_method_combo.count())]
+    assert set(values) == {"resample", "pitch_preserving", "rubberband", "soxr"}
+
+
+def test_gui_stretch_method_combo_defaults_to_resample() -> None:
+    _app()
+    window = MainWindow(lang="en")
+    assert window.stretch_method_combo.currentData() == "resample"
+
+
+def test_gui_pitch_preserving_checkbox_unchecked_by_default() -> None:
+    _app()
+    window = MainWindow(lang="en")
+    assert window.pitch_preserving_checkbox.isChecked() is False
+
+
+def test_gui_selecting_rubberband_checks_pitch_preserving() -> None:
+    _app()
+    window = MainWindow(lang="en")
+    rubberband_index = window.stretch_method_combo.findData("rubberband")
+    window.stretch_method_combo.setCurrentIndex(rubberband_index)
+    assert window.pitch_preserving_checkbox.isChecked() is True
+
+
+def test_gui_selecting_pitch_preserving_checks_pitch_preserving() -> None:
+    _app()
+    window = MainWindow(lang="en")
+    pp_index = window.stretch_method_combo.findData("pitch_preserving")
+    window.stretch_method_combo.setCurrentIndex(pp_index)
+    assert window.pitch_preserving_checkbox.isChecked() is True
+
+
+def test_gui_selecting_soxr_unchecks_pitch_preserving() -> None:
+    _app()
+    window = MainWindow(lang="en")
+    pp_index = window.stretch_method_combo.findData("pitch_preserving")
+    window.stretch_method_combo.setCurrentIndex(pp_index)
+    assert window.pitch_preserving_checkbox.isChecked() is True
+
+    soxr_index = window.stretch_method_combo.findData("soxr")
+    window.stretch_method_combo.setCurrentIndex(soxr_index)
+    assert window.pitch_preserving_checkbox.isChecked() is False
+
+
+def test_gui_checking_pitch_preserving_sets_combo_to_pitch_preserving() -> None:
+    _app()
+    window = MainWindow(lang="en")
+    assert window.stretch_method_combo.currentData() == "resample"
+    window.pitch_preserving_checkbox.setChecked(True)
+    assert window.stretch_method_combo.currentData() == "pitch_preserving"
+
+
+def test_gui_unchecking_pitch_preserving_resets_combo_to_resample() -> None:
+    _app()
+    window = MainWindow(lang="en")
+    rubberband_index = window.stretch_method_combo.findData("rubberband")
+    window.stretch_method_combo.setCurrentIndex(rubberband_index)
+    assert window.pitch_preserving_checkbox.isChecked() is True
+
+    window.pitch_preserving_checkbox.setChecked(False)
+    assert window.stretch_method_combo.currentData() == "resample"
+    assert window.pitch_preserving_checkbox.isChecked() is False
+
+
+def test_gui_run_forwards_stretch_method_from_combo(monkeypatch, tmp_path) -> None:
+    _app()
+    window = MainWindow(lang="en")
+    captured: dict[str, AlignmentOptions] = {}
+
+    window.master_input.setText("master.wav")
+    window.track_list.addItem("speaker.wav")
+    window.output_input.setText(str(tmp_path))
+    soxr_index = window.stretch_method_combo.findData("soxr")
+    window.stretch_method_combo.setCurrentIndex(soxr_index)
+    monkeypatch.setattr(window, "_start_worker", lambda options: captured.setdefault("options", options))
+
+    window.run()
+
+    assert captured["options"].stretch_method == "soxr"

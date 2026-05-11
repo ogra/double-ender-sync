@@ -74,6 +74,53 @@ def test_pitch_preserving_raises_when_librosa_missing(monkeypatch) -> None:
         apply_global_time_correction(track, master_track, drift, stretch_method="pitch_preserving")
 
 
+def test_rubberband_raises_when_pyrubberband_missing(monkeypatch) -> None:
+    import pytest
+    sr = 8000
+    local = np.ones(int(sr * 0.25), dtype=np.float32)
+    master = np.zeros(int(sr * 1.0), dtype=np.float32)
+    track = AudioTrack(path=Path("speaker-a.wav"), name="speaker-a", sample_rate=sr, duration_seconds=0.25, channels=1, original_samples=local, analysis_samples=local, analysis_sample_rate=sr)
+    master_track = AudioTrack(path=Path("master.wav"), name="master", sample_rate=sr, duration_seconds=1.0, channels=1, original_samples=master, analysis_samples=master, analysis_sample_rate=sr)
+    drift = DriftEstimate(offset_seconds=0.0, stretch_ratio=1.0, anchor_count=4, residual_median_ms=1.0, residual_max_ms=2.0)
+    original_import_module = importlib.import_module
+
+    def fake_import_module(name: str):
+        if name == "pyrubberband":
+            raise ModuleNotFoundError("no module named pyrubberband")
+        return original_import_module(name)
+
+    monkeypatch.setattr("importlib.import_module", fake_import_module)
+
+    with pytest.raises(RuntimeError, match="requires pyrubberband"):
+        apply_global_time_correction(track, master_track, drift, stretch_method="rubberband")
+
+
+def test_rubberband_render_method_is_linear_rubberband() -> None:
+    """rubberband stretch_method produces render_method='linear_rubberband' in result."""
+    import shutil
+    import pytest
+    pytest.importorskip("pyrubberband")
+    if shutil.which("rubberband") is None:
+        pytest.skip("rubberband binary not found on PATH")
+
+    sr = 8000
+    local = np.ones(int(sr * 0.25), dtype=np.float32) * 0.1
+    master = np.zeros(int(sr * 1.0), dtype=np.float32)
+    track = AudioTrack(path=Path("speaker-a.wav"), name="speaker-a", sample_rate=sr, duration_seconds=0.25, channels=1, original_samples=local, analysis_samples=local, analysis_sample_rate=sr)
+    master_track = AudioTrack(path=Path("master.wav"), name="master", sample_rate=sr, duration_seconds=1.0, channels=1, original_samples=master, analysis_samples=master, analysis_sample_rate=sr)
+    drift = DriftEstimate(offset_seconds=0.0, stretch_ratio=1.0, anchor_count=4, residual_median_ms=1.0, residual_max_ms=2.0)
+
+    result = apply_global_time_correction(track, master_track, drift, stretch_method="rubberband")
+    assert result.render_method == "linear_rubberband"
+    assert result.output_samples.dtype == np.float32
+    assert result.output_samples.shape[0] == master.shape[0]
+
+
+def test_rubberband_is_valid_stretch_method() -> None:
+    from double_ender_sync.alignment.stretch import VALID_STRETCH_METHODS
+    assert "rubberband" in VALID_STRETCH_METHODS
+
+
 class PiecewiseTestDrift:
     model_type = "piecewise_test"
     speaker_track = "speaker-a"
@@ -289,6 +336,7 @@ def test_apply_global_time_correction_renders_silence_for_zero_duration_generic_
 
 
 def test_pitch_preserving_uses_shared_sample_rate_resampler(monkeypatch) -> None:
+    import double_ender_sync.alignment.stretch as stretch
     import double_ender_sync.alignment.timeline as timeline
 
     track_sr = 200
@@ -300,17 +348,307 @@ def test_pitch_preserving_uses_shared_sample_rate_resampler(monkeypatch) -> None
     drift = DriftEstimate(offset_seconds=0.0, stretch_ratio=1.0, anchor_count=4, residual_median_ms=1.0, residual_max_ms=2.0)
     calls = []
 
-    def fake_time_stretch(samples: np.ndarray, stretch_ratio: float, stretch_method: str) -> np.ndarray:
+    def fake_stretch_by_ratio(self, samples: np.ndarray, stretch_ratio: float, *, sample_rate: int | None = None) -> np.ndarray:
         return samples
 
     def fake_resample(samples: np.ndarray, src_sample_rate: int, dst_sample_rate: int) -> np.ndarray:
         calls.append((src_sample_rate, dst_sample_rate))
         return np.full(dst_sample_rate, 0.5, dtype=np.float32)
 
-    monkeypatch.setattr(timeline, "_stretch_samples", fake_time_stretch)
+    monkeypatch.setattr(stretch.LibrosaStretcher, "stretch_by_ratio", fake_stretch_by_ratio)
     monkeypatch.setattr(timeline, "resample_to_sample_rate", fake_resample)
 
     result = apply_global_time_correction(track, master_track, drift, stretch_method="pitch_preserving")
 
     assert calls == [(track_sr, master_sr)]
     assert np.allclose(result.output_samples, 0.5)
+
+
+def test_resample_path_does_not_invoke_numpy_interpolation_stretcher(monkeypatch) -> None:
+    """The 'resample' path uses the chunked np.interp loop, not NumpyInterpolationStretcher."""
+    import double_ender_sync.alignment.stretch as stretch
+
+    sr = 8000
+    local = np.ones(sr, dtype=np.float32) * 0.5
+    master = np.zeros(sr, dtype=np.float32)
+    track = AudioTrack(
+        path=Path("speaker-a.wav"),
+        name="speaker-a",
+        sample_rate=sr,
+        duration_seconds=1.0,
+        channels=1,
+        original_samples=local,
+        analysis_samples=local,
+        analysis_sample_rate=sr,
+    )
+    master_track = AudioTrack(
+        path=Path("master.wav"),
+        name="master",
+        sample_rate=sr,
+        duration_seconds=1.0,
+        channels=1,
+        original_samples=master,
+        analysis_samples=master,
+        analysis_sample_rate=sr,
+    )
+    drift = DriftEstimate(
+        offset_seconds=0.0,
+        stretch_ratio=1.0,
+        anchor_count=4,
+        residual_median_ms=1.0,
+        residual_max_ms=2.0,
+    )
+
+    calls = []
+
+    def spy_stretch_by_ratio(self, samples, stretch_ratio):
+        calls.append(stretch_ratio)
+        return samples
+
+    monkeypatch.setattr(stretch.NumpyInterpolationStretcher, "stretch_by_ratio", spy_stretch_by_ratio)
+
+    apply_global_time_correction(track, master_track, drift, stretch_method="resample")
+
+    assert calls == [], "NumpyInterpolationStretcher.stretch_by_ratio must not be called in the resample path"
+
+
+def test_soxr_raises_when_soxr_missing(monkeypatch) -> None:
+    import pytest
+    sr = 8000
+    local = np.ones(int(sr * 0.25), dtype=np.float32)
+    master = np.zeros(int(sr * 1.0), dtype=np.float32)
+    track = AudioTrack(path=Path("speaker-a.wav"), name="speaker-a", sample_rate=sr, duration_seconds=0.25, channels=1, original_samples=local, analysis_samples=local, analysis_sample_rate=sr)
+    master_track = AudioTrack(path=Path("master.wav"), name="master", sample_rate=sr, duration_seconds=1.0, channels=1, original_samples=master, analysis_samples=master, analysis_sample_rate=sr)
+    drift = DriftEstimate(offset_seconds=0.0, stretch_ratio=1.0, anchor_count=4, residual_median_ms=1.0, residual_max_ms=2.0)
+    original_import_module = importlib.import_module
+
+    def fake_import_module(name: str):
+        if name == "soxr":
+            raise ModuleNotFoundError("no module named soxr")
+        return original_import_module(name)
+
+    monkeypatch.setattr("importlib.import_module", fake_import_module)
+
+    with pytest.raises(RuntimeError, match="requires the soxr package"):
+        apply_global_time_correction(track, master_track, drift, stretch_method="soxr")
+
+
+def test_soxr_render_method_is_linear_soxr() -> None:
+    """soxr stretch_method produces render_method='linear_soxr' in result."""
+    import pytest
+    pytest.importorskip("soxr")
+
+    sr = 8000
+    local = np.ones(int(sr * 0.25), dtype=np.float32) * 0.1
+    master = np.zeros(int(sr * 1.0), dtype=np.float32)
+    track = AudioTrack(path=Path("speaker-a.wav"), name="speaker-a", sample_rate=sr, duration_seconds=0.25, channels=1, original_samples=local, analysis_samples=local, analysis_sample_rate=sr)
+    master_track = AudioTrack(path=Path("master.wav"), name="master", sample_rate=sr, duration_seconds=1.0, channels=1, original_samples=master, analysis_samples=master, analysis_sample_rate=sr)
+    drift = DriftEstimate(offset_seconds=0.0, stretch_ratio=1.0, anchor_count=4, residual_median_ms=1.0, residual_max_ms=2.0)
+
+    result = apply_global_time_correction(track, master_track, drift, stretch_method="soxr")
+    assert result.render_method == "linear_soxr"
+    assert result.output_samples.dtype == np.float32
+    assert result.output_samples.shape[0] == master.shape[0]
+
+
+def test_soxr_is_valid_stretch_method() -> None:
+    from double_ender_sync.alignment.stretch import VALID_STRETCH_METHODS
+    assert "soxr" in VALID_STRETCH_METHODS
+
+
+def test_soxr_raises_for_non_linear_drift() -> None:
+    """soxr rendering only supports LinearDrift; generic models raise ValueError."""
+    import pytest
+    pytest.importorskip("soxr")
+
+    sr = 8000
+    local = np.ones(int(sr * 0.25), dtype=np.float32)
+    master = np.zeros(int(sr * 1.0), dtype=np.float32)
+    track = AudioTrack(path=Path("speaker-a.wav"), name="speaker-a", sample_rate=sr, duration_seconds=0.25, channels=1, original_samples=local, analysis_samples=local, analysis_sample_rate=sr)
+    master_track = AudioTrack(path=Path("master.wav"), name="master", sample_rate=sr, duration_seconds=1.0, channels=1, original_samples=master, analysis_samples=master, analysis_sample_rate=sr)
+
+    class SimplePiecewiseDrift:
+        model_type = "test_piecewise"
+        speaker_track = "speaker-a"
+        offset_seconds = 0.0
+        stretch_ratio = 1.0
+
+        def map_local_to_master(self, t: float) -> float:
+            return t
+
+        def local_rate_at(self, t: float) -> float:
+            return 1.0
+
+        def residuals_ms(self, anchors):
+            return []
+
+        @property
+        def diagnostics(self):
+            return None
+
+    with pytest.raises(ValueError, match="'soxr'"):
+        apply_global_time_correction(track, master_track, SimplePiecewiseDrift(), stretch_method="soxr")
+
+
+def test_rubberband_does_not_raise_for_non_linear_drift(monkeypatch) -> None:
+    """rubberband should route through timemap path for non-LinearDrift models."""
+    import types
+
+    fake_pyrubberband = types.ModuleType("pyrubberband")
+
+    def fake_timemap_stretch(y, sr, time_map):
+        n_dst = time_map[-1][1]
+        return np.zeros(n_dst, dtype=np.float32)
+
+    fake_pyrubberband.timemap_stretch = fake_timemap_stretch
+
+    original_import_module = importlib.import_module
+
+    def fake_import_module(name: str):
+        if name == "pyrubberband":
+            return fake_pyrubberband
+        return original_import_module(name)
+
+    monkeypatch.setattr("importlib.import_module", fake_import_module)
+
+    sr = 100
+    local = np.ones(sr, dtype=np.float32)
+    master = np.zeros(sr * 2, dtype=np.float32)
+    track = AudioTrack(path=Path("speaker-a.wav"), name="speaker-a", sample_rate=sr, duration_seconds=1.0, channels=1, original_samples=local, analysis_samples=local, analysis_sample_rate=sr)
+    master_track = AudioTrack(path=Path("master.wav"), name="master", sample_rate=sr, duration_seconds=2.0, channels=1, original_samples=master, analysis_samples=master, analysis_sample_rate=sr)
+
+    result = apply_global_time_correction(track, master_track, PiecewiseTestDrift(offset_seconds=0.5), stretch_method="rubberband")
+    assert result.render_method == "timemap_rubberband"
+    assert result.output_samples.dtype == np.float32
+    assert result.output_samples.shape[0] == master.shape[0]
+
+
+def test_rubberband_timemap_raises_when_pyrubberband_missing_with_nonlinear_drift(monkeypatch) -> None:
+    """rubberband + non-linear drift raises RuntimeError when pyrubberband is missing."""
+    import pytest
+
+    sr = 100
+    local = np.ones(sr, dtype=np.float32)
+    master = np.zeros(sr * 2, dtype=np.float32)
+    track = AudioTrack(path=Path("speaker-a.wav"), name="speaker-a", sample_rate=sr, duration_seconds=1.0, channels=1, original_samples=local, analysis_samples=local, analysis_sample_rate=sr)
+    master_track = AudioTrack(path=Path("master.wav"), name="master", sample_rate=sr, duration_seconds=2.0, channels=1, original_samples=master, analysis_samples=master, analysis_sample_rate=sr)
+    original_import_module = importlib.import_module
+
+    def fake_import_module(name: str):
+        if name == "pyrubberband":
+            raise ModuleNotFoundError("no module named pyrubberband")
+        return original_import_module(name)
+
+    monkeypatch.setattr("importlib.import_module", fake_import_module)
+
+    with pytest.raises(RuntimeError, match="requires pyrubberband"):
+        apply_global_time_correction(track, master_track, PiecewiseTestDrift(offset_seconds=0.5), stretch_method="rubberband")
+
+
+def test_rubberband_timemap_render_method_is_timemap_rubberband() -> None:
+    """rubberband + non-LinearDrift produces render_method='timemap_rubberband'."""
+    import shutil
+    import pytest
+    pytest.importorskip("pyrubberband")
+    if shutil.which("rubberband") is None:
+        pytest.skip("rubberband binary not found on PATH")
+
+    sr = 200
+    local = np.ones(sr, dtype=np.float32) * 0.1
+    master = np.zeros(int(sr * 2.5), dtype=np.float32)
+    track = AudioTrack(path=Path("speaker-a.wav"), name="speaker-a", sample_rate=sr, duration_seconds=1.0, channels=1, original_samples=local, analysis_samples=local, analysis_sample_rate=sr)
+    master_track = AudioTrack(path=Path("master.wav"), name="master", sample_rate=sr, duration_seconds=2.5, channels=1, original_samples=master, analysis_samples=master, analysis_sample_rate=sr)
+
+    result = apply_global_time_correction(track, master_track, PiecewiseTestDrift(offset_seconds=0.5), stretch_method="rubberband")
+    assert result.render_method == "timemap_rubberband"
+    assert result.output_samples.dtype == np.float32
+    assert result.output_samples.shape[0] == master.shape[0]
+    assert result.unsupported_regions is not None
+
+
+def test_rubberband_timemap_silences_internal_master_time_gap(monkeypatch) -> None:
+    """render_with_rubberband_timemap must zero out unsupported_regions in the output.
+
+    JumpGapTestDrift has an internal master-time gap from 0.5 s to 1.0 s.  The
+    rubberband path would otherwise fill this interval with distorted audio
+    produced by extreme stretching across the discontinuity.
+    """
+    import types
+
+    fake_pyrubberband = types.ModuleType("pyrubberband")
+
+    def fake_timemap_stretch(y, sr, time_map):
+        # Return non-zero audio for the full dst length so any failure to
+        # silence the gap is detectable.
+        n_dst = time_map[-1][1]
+        return np.ones(n_dst, dtype=np.float32) * 0.9
+
+    fake_pyrubberband.timemap_stretch = fake_timemap_stretch
+
+    original_import_module = importlib.import_module
+
+    def fake_import_module(name: str):
+        if name == "pyrubberband":
+            return fake_pyrubberband
+        return original_import_module(name)
+
+    monkeypatch.setattr("importlib.import_module", fake_import_module)
+
+    sr = 100
+    local = np.ones(sr, dtype=np.float32)
+    master = np.zeros(sr * 2, dtype=np.float32)
+    track = AudioTrack(path=Path("speaker-a.wav"), name="speaker-a", sample_rate=sr, duration_seconds=1.0, channels=1, original_samples=local, analysis_samples=local, analysis_sample_rate=sr)
+    master_track = AudioTrack(path=Path("master.wav"), name="master", sample_rate=sr, duration_seconds=2.0, channels=1, original_samples=master, analysis_samples=master, analysis_sample_rate=sr)
+
+    result = apply_global_time_correction(track, master_track, JumpGapTestDrift(), stretch_method="rubberband")
+
+    assert result.render_method == "timemap_rubberband"
+    # Gap from 0.5 s to 1.0 s must be silent (50 samples at sr=100)
+    gap_start = int(0.5 * sr)
+    gap_end = int(1.0 * sr)
+    assert np.allclose(result.output_samples[gap_start:gap_end], 0.0), (
+        "unsupported master-time gap must be silenced in timemap rubberband output"
+    )
+    # The gap must be reported as unsupported
+    assert any(
+        r.reason == "internal_drift_model_gap"
+        for r in result.unsupported_regions
+    )
+
+
+def test_build_rubberband_time_map_identity() -> None:
+    """_build_rubberband_time_map with uniform stretch produces correct endpoints."""
+    from double_ender_sync.alignment.timeline import _build_rubberband_time_map
+    import numpy as np
+
+    sr = 1000
+    n_src = sr
+    local_times = np.linspace(0.0, 1.0, num=11)
+    master_times = np.linspace(0.0, 1.0, num=11)
+
+    time_map = _build_rubberband_time_map(n_src, sr, local_times, master_times)
+
+    assert time_map[0][0] == 0
+    assert time_map[-1][0] == n_src
+    assert time_map[-1][1] == n_src
+    # dst must be strictly monotonically increasing
+    dst_values = [d for _, d in time_map]
+    assert all(dst_values[i] < dst_values[i + 1] for i in range(len(dst_values) - 1))
+
+
+def test_build_rubberband_time_map_deduplicates_src(monkeypatch) -> None:
+    """_build_rubberband_time_map deduplicates consecutive equal src positions."""
+    from double_ender_sync.alignment.timeline import _build_rubberband_time_map
+    import numpy as np
+
+    sr = 10
+    n_src = 10
+    # Very few samples so rounding creates many duplicates
+    local_times = np.linspace(0.0, 1.0, num=100)
+    master_times = np.linspace(0.0, 1.0, num=100)
+
+    time_map = _build_rubberband_time_map(n_src, sr, local_times, master_times)
+
+    src_values = [s for s, _ in time_map]
+    assert len(src_values) == len(set(src_values)), "src values must be unique"
+    assert time_map[-1][0] == n_src

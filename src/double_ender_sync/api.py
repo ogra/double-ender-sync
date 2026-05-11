@@ -31,7 +31,7 @@ class AlignmentOptions:
     log_file: Path | None = None
     stretch_ratio_warning_threshold: float = 0.003
     stretch_ratio_auto_continue: bool = False
-    stretch_method: Literal["resample", "pitch_preserving"] = "resample"
+    stretch_method: Literal["resample", "pitch_preserving", "rubberband", "soxr"] = "resample"
     drift_model: DriftModelName = DEFAULT_DRIFT_MODEL_CONFIG.drift_model
     allow_nonlinear_drift: bool = DEFAULT_DRIFT_MODEL_CONFIG.allow_nonlinear_drift
     min_anchors_for_piecewise: int = DEFAULT_DRIFT_MODEL_CONFIG.min_anchors_for_piecewise
@@ -67,7 +67,7 @@ class AlignmentOptions:
 def build_cli_argv(options: AlignmentOptions) -> list[str]:
     """Convert :class:`AlignmentOptions` to CLI-compatible argv."""
 
-    allowed_methods = {"resample", "pitch_preserving"}
+    allowed_methods = {"resample", "pitch_preserving", "rubberband", "soxr"}
     allowed_vad_strategies = {"adaptive_rms", "rms", "silero", "webrtc", "pyannote"}
     allowed_drift_models = {"auto", "linear", "piecewise_linear", "spline", "kalman"}
     allowed_spline_knot_sources = {"auto", "piecewise_boundaries", "anchors"}

@@ -8,7 +8,7 @@
   "gui.output_directory": "Output directory",
   "gui.normalize_output": "Normalize output",
   "gui.enable_local_adjustment": "Enable local adjustment (experimental)",
-  "gui.use_pitch_preserving": "Use pitch-preserving global stretch (librosa)",
+  "gui.use_pitch_preserving": "Use pitch-preserving global stretch",
   "gui.analysis_sample_rate": "Analysis sample rate",
   "gui.stretch_threshold": "Stretch ratio warning threshold",
   "gui.vad_strategy": "VAD strategy",
@@ -62,5 +62,10 @@
   "gui.min_anchors_per_segment": "Min anchors per segment",
   "gui.max_anchor_gap_seconds": "Max trusted anchor gap (s)",
   "gui.max_anchor_gap_disabled": "Disabled",
-  "gui.verbose_report": "Verbose/debug report"
+  "gui.verbose_report": "Verbose/debug report",
+  "gui.stretch_method": "Stretch method",
+  "gui.stretch_method.resample": "Resample (linear, no anti-aliasing)",
+  "gui.stretch_method.pitch_preserving": "Pitch-preserving (librosa)",
+  "gui.stretch_method.rubberband": "Pitch-preserving (rubberband)",
+  "gui.stretch_method.soxr": "soxr VHQ (recommended, requires [hq-resample])"
 }

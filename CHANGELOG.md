@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.3] - 2026-05-11
+
+### Added
+
+- Added high-quality time-stretch algorithms via the `--stretch-method` option:
+  - `rubberband` (pitch-preserving; requires `double-ender-sync[stretch]` and the `rubberband` command-line tool separately)
+  - `soxr` (requires `double-ender-sync[hq-resample]`)
+
 ## [0.2.2] - 2026-05-09
 
 ### Added

@@ -8,7 +8,7 @@
   "gui.output_directory": "出力ディレクトリ",
   "gui.normalize_output": "出力を正規化",
   "gui.enable_local_adjustment": "ローカル補正を有効化（実験的）",
-  "gui.use_pitch_preserving": "ピッチ保持グローバル伸縮を使用（librosa）",
+  "gui.use_pitch_preserving": "ピッチ保持グローバル伸縮を使用",
   "gui.analysis_sample_rate": "解析サンプルレート",
   "gui.stretch_threshold": "ストレッチ比率の警告しきい値",
   "gui.vad_strategy": "VAD 戦略",
@@ -62,5 +62,10 @@
   "gui.min_anchors_per_segment": "セグメントごとの最小アンカー数",
   "gui.max_anchor_gap_seconds": "信頼済みアンカー最大間隔（秒）",
   "gui.max_anchor_gap_disabled": "無効",
-  "gui.verbose_report": "詳細/デバッグレポート"
+  "gui.verbose_report": "詳細/デバッグレポート",
+  "gui.stretch_method": "ストレッチ方式",
+  "gui.stretch_method.resample": "Resample（線形補間・アンチエイリアスなし）",
+  "gui.stretch_method.pitch_preserving": "ピッチ保持（librosa）",
+  "gui.stretch_method.rubberband": "ピッチ保持（rubberband）",
+  "gui.stretch_method.soxr": "soxr VHQ（推奨・[hq-resample]が必要）"
 }

@@ -51,6 +51,18 @@ pip install "double-ender-sync[gui]"
 pip install "double-ender-sync[stretch]"
 ```
 
+  > **Note:** `--stretch-method rubberband` requires the `rubberband` command-line executable on your `PATH` in addition to the Python package, because `pyrubberband` is a wrapper around that binary. Install it separately:
+  > - Debian/Ubuntu: `apt install rubberband-cli`
+  > - macOS (Homebrew): `brew install rubberband`
+
+- Add high-quality resampler (soxr) support for alias-free resampling at small drift ratios:
+
+```bash
+pip install "double-ender-sync[hq-resample]"
+```
+
+  > `--stretch-method soxr` uses the `soxr` Python package (a binding to libsoxr) and does **not** require any external binary.
+
 - Add ML-VAD runtime dependencies for lightweight ML backends (`silero` / `webrtc`):
 
 ```bash
@@ -109,6 +121,16 @@ If you need pitch-preserving stretch during development, install it explicitly:
 pip install -e ".[stretch]"
 ```
 
+> **Note:** `--stretch-method rubberband` (backed by `pyrubberband`) also requires the `rubberband` command-line executable on your `PATH`. Install it separately:
+> - Debian/Ubuntu: `apt install rubberband-cli`
+> - macOS (Homebrew): `brew install rubberband`
+
+If you need high-quality resampling (soxr) during development:
+
+```bash
+pip install -e ".[hq-resample]"
+```
+
 After installation, the command is available as:
 
 ```bash
@@ -120,10 +142,10 @@ Print the installed version from the CLI with either long or short version flags
 ```bash
 double-ender-sync --version
 double-ender-sync -V
-# version 0.2.2
+# version 0.2.3
 ```
 
-The same version is exposed to Python callers through the package/API (`double_ender_sync.__version__` and `double_ender_sync.api.get_version()` both return `0.2.2`) and is shown in the GUI footer as `v0.2.2`.
+The same version is exposed to Python callers through the package/API (`double_ender_sync.__version__` and `double_ender_sync.api.get_version()` both return `0.2.3`) and is shown in the GUI footer as `v0.2.3`.
 
 ## Quick start
 
@@ -177,8 +199,10 @@ by `analysis`, `master`, `tracks`, `warnings`, and `errors` sections.
   Warn when `abs(stretch_ratio - 1.0)` exceeds threshold (default `0.003` = 0.3%).
 - `--stretch-ratio-auto-continue`  
   Skip interactive confirmation and continue even when stretch ratio warning threshold is exceeded.
-- `--stretch-method {resample,pitch_preserving}`  
-  Global correction method. `resample` is default and now renders through the general monotonic time-mapping interface for future drift models while preserving the linear default/control behavior, including tracks whose original sample rate differs from the master sample rate. `pitch_preserving` uses librosa, prioritizes pitch stability for larger drift corrections, and currently supports only `LinearDrift`; unsupported renderer/model combinations fail clearly rather than silently producing audio.
+- `--stretch-method {resample,pitch_preserving,rubberband,soxr}`  
+  Global correction method. `resample` is default and now renders through the general monotonic time-mapping interface for future drift models while preserving the linear default/control behavior, including tracks whose original sample rate differs from the master sample rate. `pitch_preserving` uses librosa, prioritizes pitch stability for larger drift corrections, and currently supports only `LinearDrift`; unsupported renderer/model combinations fail clearly rather than silently producing audio.  
+  `rubberband` uses the Rubber Band Library via `pyrubberband` for superior transient and formant preservation. Requires the `[stretch]` extra **and** the `rubberband` command-line executable on `PATH` (`apt install rubberband-cli` on Debian/Ubuntu, `brew install rubberband` on macOS) — `pyrubberband` is a wrapper around that binary.  
+  `soxr` uses libsoxr at VHQ quality (64-tap sinc) for alias-free resampling at small drift ratios. Requires the `[hq-resample]` extra only; no external binary is needed.
 - `--min-anchor-duration 1.0` / `--base-anchor-duration 4.0` / `--max-anchor-duration 8.0`
   Configure the adaptive speech-derived anchor duration policy shared by CLI/API/GUI runs. High-SNR, distinctive material stays near the base duration; noisier or spectrally flatter material can extend toward the maximum instead of using a globally fixed clip length. If `--base-anchor-duration` is omitted, the CLI derives an effective default by clamping 4.0 seconds into the configured min/max bounds, so max-only or min-only tuning remains valid. Explicit base values are validated against the min/max bounds and fail clearly when inconsistent.
 - `--min-snr-db <db>` / `--spectral-flatness-threshold <0.0-1.0>`

@@ -38,6 +38,8 @@ from double_ender_sync.config import DEFAULT_DRIFT_MODEL_CONFIG
 from double_ender_sync.i18n import TranslationCatalog, resolve_language
 from double_ender_sync.i18n.resolver import extract_explicit_lang
 
+_PITCH_PRESERVING_STRETCH_METHODS: frozenset[str] = frozenset({"pitch_preserving", "rubberband"})
+
 
 class DropListWidget(QListWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -157,6 +159,11 @@ class MainWindow(QMainWindow):
         self.normalize_checkbox = QCheckBox(self.t("gui.normalize_output"))
         self.local_adjust_checkbox = QCheckBox(self.t("gui.enable_local_adjustment"))
         self.pitch_preserving_checkbox = QCheckBox(self.t("gui.use_pitch_preserving"))
+        self.stretch_method_combo = QComboBox()
+        self.stretch_method_combo.addItem(self.t("gui.stretch_method.resample"), "resample")
+        self.stretch_method_combo.addItem(self.t("gui.stretch_method.pitch_preserving"), "pitch_preserving")
+        self.stretch_method_combo.addItem(self.t("gui.stretch_method.rubberband"), "rubberband")
+        self.stretch_method_combo.addItem(self.t("gui.stretch_method.soxr"), "soxr")
         self.stretch_threshold_input = QDoubleSpinBox()
         self.stretch_threshold_input.setRange(0.0001, 0.1)
         self.stretch_threshold_input.setDecimals(4)
@@ -209,9 +216,12 @@ class MainWindow(QMainWindow):
         self.drift_model_input.currentIndexChanged.connect(self._sync_drift_model_gate)
         self.allow_nonlinear_drift_checkbox.toggled.connect(self._sync_drift_model_gate)
         self.min_anchors_per_segment_input.valueChanged.connect(self._sync_piecewise_anchor_minimum)
+        self.stretch_method_combo.currentIndexChanged.connect(self._sync_checkbox_from_combo)
+        self.pitch_preserving_checkbox.toggled.connect(self._sync_combo_from_checkbox)
         self._sync_pyannote_model_input_enabled()
         self._sync_drift_model_gate()
         self._sync_piecewise_anchor_minimum()
+        self._sync_checkbox_from_combo()
 
         layout.addLayout(form_layout)
 
@@ -225,6 +235,7 @@ class MainWindow(QMainWindow):
         advanced_layout.addRow(self.normalize_checkbox)
         advanced_layout.addRow(self.local_adjust_checkbox)
         advanced_layout.addRow(self.pitch_preserving_checkbox)
+        advanced_layout.addRow(QLabel(self.t("gui.stretch_method")), self.stretch_method_combo)
         advanced_layout.addRow(QLabel(self.t("gui.stretch_threshold")), self.stretch_threshold_input)
         advanced_layout.addRow(QLabel(self.t("gui.vad_strategy")), self.vad_strategy_input)
         advanced_layout.addRow(QLabel(self.t("gui.pyannote_model")), self.pyannote_model_input)
@@ -330,6 +341,26 @@ class MainWindow(QMainWindow):
         if self.min_anchors_for_piecewise_input.value() < required_minimum:
             self.min_anchors_for_piecewise_input.setValue(required_minimum)
 
+    def _sync_checkbox_from_combo(self, *_args: object) -> None:
+        method = str(self.stretch_method_combo.currentData())
+        is_pitch_preserving = method in _PITCH_PRESERVING_STRETCH_METHODS
+        self.pitch_preserving_checkbox.blockSignals(True)
+        self.pitch_preserving_checkbox.setChecked(is_pitch_preserving)
+        self.pitch_preserving_checkbox.blockSignals(False)
+
+    def _sync_combo_from_checkbox(self, checked: bool, *_args: object) -> None:
+        current = str(self.stretch_method_combo.currentData())
+        if checked and current not in _PITCH_PRESERVING_STRETCH_METHODS:
+            target_index = self.stretch_method_combo.findData("pitch_preserving")
+        elif not checked and current in _PITCH_PRESERVING_STRETCH_METHODS:
+            target_index = self.stretch_method_combo.findData("resample")
+        else:
+            return
+        if target_index >= 0:
+            self.stretch_method_combo.blockSignals(True)
+            self.stretch_method_combo.setCurrentIndex(target_index)
+            self.stretch_method_combo.blockSignals(False)
+
     def select_master(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(self, self.t("gui.dialog.select_master"), filter=SUPPORTED_AUDIO_FILTER)
         if file_path:
@@ -375,7 +406,7 @@ class MainWindow(QMainWindow):
             local_adjust_enabled=self.local_adjust_checkbox.isChecked(),
             stretch_ratio_warning_threshold=float(self.stretch_threshold_input.value()),
             stretch_ratio_auto_continue=False,
-            stretch_method="pitch_preserving" if self.pitch_preserving_checkbox.isChecked() else "resample",
+            stretch_method=str(self.stretch_method_combo.currentData()),
             vad_strategy=vad_strategy,
             pyannote_model=self._selected_pyannote_model(vad_strategy),
             drift_model=str(self.drift_model_input.currentData()),

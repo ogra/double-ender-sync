@@ -137,7 +137,7 @@ def test_gui_displays_package_version_in_corner() -> None:
     _app()
     window = MainWindow(lang="en")
 
-    assert window.version_label.text() == "v0.2.3"
+    assert window.version_label.text() == "v0.2.4"
     assert window.version_label.alignment() & Qt.AlignRight
     assert window.version_label.alignment() & Qt.AlignBottom
 
@@ -414,7 +414,7 @@ def test_gui_stretch_method_combo_shows_all_methods() -> None:
     _app()
     window = MainWindow(lang="en")
     values = [window.stretch_method_combo.itemData(i) for i in range(window.stretch_method_combo.count())]
-    assert set(values) == {"resample", "pitch_preserving", "rubberband", "soxr"}
+    assert set(values) == {"resample", "pitch_preserving", "rubberband", "soxr", "audiostretchy"}
 
 
 def test_gui_stretch_method_combo_defaults_to_resample() -> None:
@@ -442,6 +442,14 @@ def test_gui_selecting_pitch_preserving_checks_pitch_preserving() -> None:
     window = MainWindow(lang="en")
     pp_index = window.stretch_method_combo.findData("pitch_preserving")
     window.stretch_method_combo.setCurrentIndex(pp_index)
+    assert window.pitch_preserving_checkbox.isChecked() is True
+
+
+def test_gui_selecting_audiostretchy_checks_pitch_preserving() -> None:
+    _app()
+    window = MainWindow(lang="en")
+    audiostretchy_index = window.stretch_method_combo.findData("audiostretchy")
+    window.stretch_method_combo.setCurrentIndex(audiostretchy_index)
     assert window.pitch_preserving_checkbox.isChecked() is True
 
 

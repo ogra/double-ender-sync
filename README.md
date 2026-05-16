@@ -51,9 +51,10 @@ pip install "double-ender-sync[gui]"
 pip install "double-ender-sync[stretch]"
 ```
 
-  > **Note:** `--stretch-method rubberband` requires the `rubberband` command-line executable on your `PATH` in addition to the Python package, because `pyrubberband` is a wrapper around that binary. Install it separately:
-  > - Debian/Ubuntu: `apt install rubberband-cli`
-  > - macOS (Homebrew): `brew install rubberband`
+> **Note:** `--stretch-method rubberband` requires the `rubberband` command-line executable on your `PATH` in addition to the Python package, because `pyrubberband` is a wrapper around that binary. Install it separately:
+>
+> - Debian/Ubuntu: `apt install rubberband-cli`
+> - macOS (Homebrew): `brew install rubberband`
 
 - Add high-quality resampler (soxr) support for alias-free resampling at small drift ratios:
 
@@ -61,7 +62,18 @@ pip install "double-ender-sync[stretch]"
 pip install "double-ender-sync[hq-resample]"
 ```
 
-  > `--stretch-method soxr` uses the `soxr` Python package (a binding to libsoxr) and does **not** require any external binary.
+> `--stretch-method soxr` uses the `soxr` Python package (a binding to libsoxr) and does **not** require any external binary.
+
+- Add pitch-preserving time-stretch via TDHS (Time Domain Harmonic Scaling):
+
+```bash
+pip install "double-ender-sync[audiostretchy]"
+```
+
+> `--stretch-method audiostretchy` uses the Time Domain Harmonic Scaling (TDHS) algorithm for high-quality pitch-preserving time-stretch. Requires a C compiler to build the extension from source.
+> The current extra is pinned to a Git URL, so installation also requires `git` and network access at install time.
+>
+> **Python version constraint:** `audiostretchy-f32` has been compatibility-tested on Python 3.11–3.13 only. Python 3.14 or later is not supported by this extra. The core package itself supports Python 3.11+; the `[audiostretchy]` extra requires **Python ≤ 3.13**.
 
 - Add ML-VAD runtime dependencies for lightweight ML backends (`silero` / `webrtc`):
 
@@ -85,7 +97,7 @@ pip install "double-ender-sync[vad-pyannote]"
 > double-ender-sync ... --vad-strategy pyannote
 > ```
 
-- Install everything (GUI + stretch + dev-oriented extras) only if you explicitly want full feature/development setup:
+- Install everything (GUI + runtime optional features) only if you explicitly want full feature setup:
 
 ```bash
 pip install "double-ender-sync[all]"
@@ -122,6 +134,7 @@ pip install -e ".[stretch]"
 ```
 
 > **Note:** `--stretch-method rubberband` (backed by `pyrubberband`) also requires the `rubberband` command-line executable on your `PATH`. Install it separately:
+>
 > - Debian/Ubuntu: `apt install rubberband-cli`
 > - macOS (Homebrew): `brew install rubberband`
 
@@ -142,10 +155,10 @@ Print the installed version from the CLI with either long or short version flags
 ```bash
 double-ender-sync --version
 double-ender-sync -V
-# version 0.2.3
+# version 0.2.4
 ```
 
-The same version is exposed to Python callers through the package/API (`double_ender_sync.__version__` and `double_ender_sync.api.get_version()` both return `0.2.3`) and is shown in the GUI footer as `v0.2.3`.
+The same version is exposed to Python callers through the package/API (`double_ender_sync.__version__` and `double_ender_sync.api.get_version()` both return `0.2.4`) and is shown in the GUI footer as `v0.2.4`.
 
 ## Quick start
 
@@ -187,22 +200,23 @@ by `analysis`, `master`, `tracks`, `warnings`, and `errors` sections.
 
 ## Useful options
 
-- `--analysis-sample-rate 16000`  
+- `--analysis-sample-rate 16000`
   Set analysis sample rate used for feature extraction/matching.
-- `--local-adjust-enabled`  
+- `--local-adjust-enabled`
   Enable **experimental** optional local adjustment around large residual errors. This is disabled by default and should only be used after manual report/audio review.
-- `--local-adjust-threshold-ms 80`  
+- `--local-adjust-threshold-ms 80`
   Threshold for triggering local adjustment diagnostics/correction.
-- `--normalize-output`  
+- `--normalize-output`
   Normalize final synced WAV peak level before writing. Disabled by default.
-- `--stretch-ratio-warning-threshold 0.003`  
+- `--stretch-ratio-warning-threshold 0.003`
   Warn when `abs(stretch_ratio - 1.0)` exceeds threshold (default `0.003` = 0.3%).
-- `--stretch-ratio-auto-continue`  
+- `--stretch-ratio-auto-continue`
   Skip interactive confirmation and continue even when stretch ratio warning threshold is exceeded.
-- `--stretch-method {resample,pitch_preserving,rubberband,soxr}`  
-  Global correction method. `resample` is default and now renders through the general monotonic time-mapping interface for future drift models while preserving the linear default/control behavior, including tracks whose original sample rate differs from the master sample rate. `pitch_preserving` uses librosa, prioritizes pitch stability for larger drift corrections, and currently supports only `LinearDrift`; unsupported renderer/model combinations fail clearly rather than silently producing audio.  
-  `rubberband` uses the Rubber Band Library via `pyrubberband` for superior transient and formant preservation. Requires the `[stretch]` extra **and** the `rubberband` command-line executable on `PATH` (`apt install rubberband-cli` on Debian/Ubuntu, `brew install rubberband` on macOS) — `pyrubberband` is a wrapper around that binary.  
+- `--stretch-method {resample,pitch_preserving,rubberband,soxr,audiostretchy}`
+  Global correction method. `resample` is default and now renders through the general monotonic time-mapping interface for future drift models while preserving the linear default/control behavior, including tracks whose original sample rate differs from the master sample rate. `pitch_preserving` uses librosa, prioritizes pitch stability for larger drift corrections, and currently supports only `LinearDrift`; unsupported renderer/model combinations fail clearly rather than silently producing audio.
+  `rubberband` uses the Rubber Band Library via `pyrubberband` for superior transient and formant preservation. Requires the `[stretch]` extra **and** the `rubberband` command-line executable on `PATH` (`apt install rubberband-cli` on Debian/Ubuntu, `brew install rubberband` on macOS) — `pyrubberband` is a wrapper around that binary.
   `soxr` uses libsoxr at VHQ quality (64-tap sinc) for alias-free resampling at small drift ratios. Requires the `[hq-resample]` extra only; no external binary is needed.
+  `audiostretchy` implements Time Domain Harmonic Scaling (TDHS) for high-quality time-stretch that preserves pitch and supports 32-bit float audio. Requires the `[audiostretchy]` extra and a C compiler for building the extension. **Note:** `audiostretchy-f32` has been compatibility-tested on Python 3.11–3.13 only; Python 3.14 or later is not supported by this extra.
 - `--min-anchor-duration 1.0` / `--base-anchor-duration 4.0` / `--max-anchor-duration 8.0`
   Configure the adaptive speech-derived anchor duration policy shared by CLI/API/GUI runs. High-SNR, distinctive material stays near the base duration; noisier or spectrally flatter material can extend toward the maximum instead of using a globally fixed clip length. If `--base-anchor-duration` is omitted, the CLI derives an effective default by clamping 4.0 seconds into the configured min/max bounds, so max-only or min-only tuning remains valid. Explicit base values are validated against the min/max bounds and fail clearly when inconsistent.
 - `--min-snr-db <db>` / `--spectral-flatness-threshold <0.0-1.0>`
@@ -231,9 +245,9 @@ by `analysis`, `master`, `tracks`, `warnings`, and `errors` sections.
   Bound accepted local rates plus adjacent segment, knot, and Kalman mapping-rate changes for piecewise, spline, and Kalman models. Fits outside hard bounds fall back to a simpler model; accepted fits above the warning bound emit report warnings for manual inspection.
 - `--verbose-report`
   Write the full debug form of `sync-report.json`. Default reports keep compact, editor-facing fields: track metadata, model metadata, linear compatibility fields (`offset_seconds`, `stretch_ratio`, anchor/residual metrics), warning/error lists, unsupported-region summaries, breakpoint/knot/state-point/anchor-residual counts, and compact summaries for speech segments, anchor candidates, drift-anchor matches, anchor-selection diagnostics, drift-fit diagnostics, and local adjustment. Default reports omit the heavyweight detail arrays and diagnostic payloads: `speech_segments`, `anchor_candidates`, full `drift_anchor_matches`, full `anchor_selection_diagnostics`, full `drift_fit_diagnostics`, nested `drift_estimate`, detailed model diagnostics, full `breakpoints`, `knots`, `state_points`, `anchor_residuals`, and full `unsupported_regions`. Verbose reports add those detailed fields plus an effective configuration snapshot under `analysis.configuration_snapshot`. Use this for model-selection debugging and calibration comparisons; the same option is available through `AlignmentOptions.verbose_report` and the GUI advanced settings so CLI/API/GUI runs share the same report semantics.
-- `--debug`  
+- `--debug`
   Enable debug logging to identify which stage is running when resource usage spikes.
-- `--vad-strategy {silero,adaptive_rms,rms,webrtc,pyannote}`  
+- `--vad-strategy {silero,adaptive_rms,rms,webrtc,pyannote}`
   Select VAD backend strategy. Default is `adaptive_rms`. Current implementation behavior:
   - `silero`: requires `vad-ml` extra; if missing, the command fails with an explicit error.
   - `adaptive_rms`: adaptive thresholding (`noise_floor + k*MAD`) for low-cost robustness.
@@ -246,7 +260,7 @@ by `analysis`, `master`, `tracks`, `warnings`, and `errors` sections.
     - For gated/private models, set `HF_TOKEN` (or `HUGGINGFACE_HUB_TOKEN`) and accept model terms for the selected model at `https://hf.co/<model-id>`.
 - `--pyannote-model <model-id>`
   Select the pyannote model/pipeline id. Only valid with `--vad-strategy pyannote`. The default is `pyannote/speaker-diarization-community-1`; pass `--pyannote-model pyannote/segmentation-3.0` to use the verified segmentation-model VAD path, or `--pyannote-model pyannote/voice-activity-detection` to reproduce the legacy pipeline behavior.
-- `--log-file output/debug.log`  
+- `--log-file output/debug.log`
   Write logs to a specific file path (default: `output/double-ender-sync.log`).
 
 Use `double-ender-sync --help` for the full option list.
@@ -315,9 +329,6 @@ GUI features (current):
 - Drag and drop multiple speaker `.wav` tracks
 - Choose output directory
 - Run the same alignment pipeline as CLI
-
-
-
 
 ## Runtime troubleshooting (pyannote + FFmpeg)
 
@@ -401,7 +412,6 @@ if exit_code != 0:
 ```
 
 `run_alignment(...)` returns the same exit code semantics as the CLI `main(...)`. Anchor-selection and drift-model options use the same shared configuration defaults as CLI and GUI runs; `drift_model="auto"` still resolves to the linear control path unless `allow_nonlinear_drift=True` is set explicitly.
-
 
 ## Translation operations rules
 

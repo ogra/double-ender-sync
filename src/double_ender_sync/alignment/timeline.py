@@ -10,7 +10,7 @@ from double_ender_sync.types import AudioTrack
 
 LOGGER = logging.getLogger(__name__)
 
-_PITCH_PRESERVING_STRETCH_METHODS: frozenset[str] = frozenset({"pitch_preserving", "rubberband"})
+_PITCH_PRESERVING_STRETCH_METHODS: frozenset[str] = frozenset({"pitch_preserving", "rubberband", "audiostretchy"})
 _SOXR_STRETCH_METHODS: frozenset[str] = frozenset({"soxr"})
 # Methods that operate on the full input array and are routed through
 # _place_rendered_samples_on_master_timeline (not the chunked np.interp loop).

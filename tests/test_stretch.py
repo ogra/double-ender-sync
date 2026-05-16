@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from double_ender_sync.alignment.stretch import (
+    AudiostretchyStretcher,
     LibrosaStretcher,
     NumpyInterpolationStretcher,
     RubberbandStretcher,
@@ -86,6 +87,9 @@ def test_make_stretcher_soxr_returns_soxr_stretcher() -> None:
     s = make_stretcher("soxr")
     assert isinstance(s, SoxrStretcher)
 
+def test_make_stretcher_audiostretchy_returns_audiostretchy_stretcher() -> None:
+    s = make_stretcher("audiostretchy")
+    assert isinstance(s, AudiostretchyStretcher)
 
 def test_make_stretcher_invalid_raises_value_error_mentioning_stretch_method() -> None:
     with pytest.raises(ValueError, match="stretch_method"):
@@ -97,6 +101,42 @@ def test_valid_stretch_methods_covers_known_methods() -> None:
     assert "pitch_preserving" in VALID_STRETCH_METHODS
     assert "rubberband" in VALID_STRETCH_METHODS
     assert "soxr" in VALID_STRETCH_METHODS
+    assert "audiostretchy" in VALID_STRETCH_METHODS
+
+class TestAudiostretchyStretcher:
+    def setup_method(self) -> None:
+        self.stretcher = AudiostretchyStretcher()
+
+    def test_requires_sample_rate(self) -> None:
+        samples = np.ones(100, dtype=np.float32)
+        with pytest.raises(ValueError, match="sample_rate"):
+            self.stretcher.stretch_by_ratio(samples, 1.0, sample_rate=None)
+
+    def test_stretches_with_audio_stretch_class(self, monkeypatch) -> None:
+        class FakeAudioStretch:
+            def __init__(self):
+                self.samples = None
+                self.samplerate = 0
+                self.num_channels = 0
+
+            def stretch(self, ratio: float = 1.0):
+                n = self.samples.shape[1]
+                out_n = max(1, int(round(n * ratio)))
+                self.samples = np.full((1, out_n), 0.25, dtype=np.float32)
+
+        class FakeModule:
+            AudioStretch = FakeAudioStretch
+
+        monkeypatch.setattr(
+            AudiostretchyStretcher,
+            "_import_audiostretchy_f32",
+            staticmethod(lambda: FakeModule),
+        )
+
+        samples = np.ones(200, dtype=np.float32)
+        out = self.stretcher.stretch_by_ratio(samples, 1.5, sample_rate=48000)
+        assert out.dtype == np.float32
+        assert out.shape[0] == round(200 * 1.5)
 
 
 # ---------------------------------------------------------------------------

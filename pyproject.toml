@@ -1,16 +1,12 @@
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "double-ender-sync"
-version = "0.2.3"
+version = "0.2.4"
 description = "Double-ender time alignment engine for podcast production"
 readme = "README.md"
 requires-python = ">=3.11"
-authors = [{ name = "Toshiyuki Ogura" }]
 license-files = ["LICENSE"]
-keywords = ["podcast", "double-ender", "audio", "alignment", "sync"]
+authors = [{ name = "Toshiyuki Ogura" }]
+keywords = ["alignment", "audio", "double-ender", "podcast", "sync"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",
@@ -29,13 +25,43 @@ dependencies = [
   "soundfile>=0.12",
 ]
 
+[project.scripts]
+double-ender-sync = "double_ender_sync.cli:main"
+double-ender-sync-generate-demo-pack = "double_ender_sync.calibration.demo_pack:main"
+double-ender-sync-gui = "double_ender_sync.gui_launcher:main"
+double-ender-sync-validate-locales = "double_ender_sync.i18n.validate:main"
+
 [project.optional-dependencies]
-stretch = [
+all = [
+  "PySide6>=6.7",
   "librosa>=0.10",
   "pyrubberband>=0.3",
+  "soxr>=0.3.7",
+  "audiostretchy-f32",
+  "onnxruntime>=1.18",
+  "silero-vad>=5.1",
+  "webrtcvad-wheels>=2.0.14",
+  "pyannote.audio>=4.0.4,<5",
+  "torch==2.11.0",
+  "torchaudio==2.11.0",
+  "torchcodec>=0.11.1,<0.12",
+]
+audiostretchy = [
+  "audiostretchy-f32",
+]
+dev = [
+  "pytest",
+  "pyflakes>=3.4",
+]
+gui = [
+  "PySide6>=6.7",
 ]
 hq-resample = [
   "soxr>=0.3.7",
+]
+stretch = [
+  "librosa>=0.10",
+  "pyrubberband>=0.3",
 ]
 vad-ml = [
   "onnxruntime>=1.18",
@@ -48,46 +74,21 @@ vad-pyannote = [
   "torchaudio==2.11.0",
   "torchcodec>=0.11.1,<0.12",
 ]
-dev = [
-  "pytest",
-  "pyflakes>=3.4",
-]
-gui = [
-  "PySide6>=6.7",
-]
-all = [
-  "PySide6>=6.7",
-  "librosa>=0.10",
-  "pyrubberband>=0.3",
-  "soxr>=0.3.7",
-  "onnxruntime>=1.18",
-  "silero-vad>=5.1",
-  "webrtcvad-wheels>=2.0.14",
-  "pyannote.audio>=4.0.4,<5",
-  "torch==2.11.0",
-  "torchaudio==2.11.0",
-  "torchcodec>=0.11.1,<0.12",
-  "pytest",
-  "pyflakes>=3.4",
-]
 
-[project.scripts]
-double-ender-sync = "double_ender_sync.cli:main"
-double-ender-sync-gui = "double_ender_sync.gui_launcher:main"
-double-ender-sync-validate-locales = "double_ender_sync.i18n.validate:main"
-double-ender-sync-generate-demo-pack = "double_ender_sync.calibration.demo_pack:main"
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+addopts = "-q"
+pythonpath = ["src"]
 
 [tool.setuptools]
-package-dir = {"" = "src"}
+package-dir = { "" = "src" }
 include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
-
 [tool.setuptools.package-data]
 "double_ender_sync.i18n.locales" = ["*.json"]
-
-[tool.pytest.ini_options]
-pythonpath = ["src"]
-addopts = "-q"

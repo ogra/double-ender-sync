@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.4] - 2026-05-17
+
+### Added
+
+- Added TDHS (Time Domain Harmonic Scaling) time-stretch algorithm:
+  - `audiostretchy-f32` (requires `double-ender-sync[audiostretchy]` and a C compiler; supports 32-bit float audio)
+
 ## [0.2.3] - 2026-05-11
 
 ### Added

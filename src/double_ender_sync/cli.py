@@ -103,7 +103,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--pyannote-model", default=None, help=f"pyannote model/pipeline id when --vad-strategy pyannote is selected (default: {DEFAULT_PYANNOTE_MODEL})")
     parser.add_argument("--stretch-ratio-warning-threshold", type=float, default=0.003, help="Warn when abs(stretch_ratio-1.0) exceeds this value")
     parser.add_argument("--stretch-ratio-auto-continue", action="store_true", help="Continue automatically when stretch ratio warning threshold is exceeded")
-    parser.add_argument("--stretch-method", choices=["resample", "pitch_preserving", "rubberband", "soxr"], default="resample", help="Global time correction method")
+    parser.add_argument("--stretch-method", choices=["resample", "pitch_preserving", "rubberband", "soxr", "audiostretchy"], default="resample", help="Global time correction method")
     parser.add_argument("--drift-model", choices=["auto", "linear", "piecewise_linear", "spline", "kalman"], default=DEFAULT_DRIFT_MODEL_CONFIG.drift_model, help="Drift model policy; non-linear and research Kalman models require --allow-nonlinear-drift")
     parser.add_argument("--allow-nonlinear-drift", action="store_true", default=DEFAULT_DRIFT_MODEL_CONFIG.allow_nonlinear_drift, help="Enable experimental non-linear drift candidates and explicit research Kalman smoothing")
     parser.add_argument("--min-anchors-for-piecewise", type=int, default=DEFAULT_DRIFT_MODEL_CONFIG.min_anchors_for_piecewise, help="Minimum fitted anchors before piecewise breakpoint search")

@@ -314,11 +314,81 @@ class SoxrStretcher:
         return resampled
 
 
+class AudiostretchyStretcher:
+    """Time-stretch backed by the ``audiostretchy-f32`` package.
+
+    Uses ``audiostretchy.AudioStretch`` and applies ``AudioStretch.stretch`` to
+    a whole-array mono buffer. This does not require an external executable
+    dependency.
+    """
+
+    name: str = "audiostretchy"
+
+    @staticmethod
+    def _import_audiostretchy_f32():
+        module = importlib.import_module("audiostretchy")
+
+        if not hasattr(module, "AudioStretch"):
+            raise RuntimeError("audiostretchy.AudioStretch is not available")
+
+        return module
+
+    def stretch_by_ratio(
+        self,
+        samples: np.ndarray,
+        stretch_ratio: float,
+        *,
+        sample_rate: int | None = None,
+    ) -> np.ndarray:
+        if stretch_ratio <= 0:
+            raise ValueError(f"stretch_ratio must be positive; got {stretch_ratio!r}")
+        if samples.size == 0:
+            return samples.astype(np.float32, copy=False)
+        if sample_rate is None:
+            raise ValueError(
+                "AudiostretchyStretcher requires sample_rate to be specified explicitly. "
+                "Pass the source audio sample rate (e.g. sample_rate=48000)."
+            )
+        if isinstance(sample_rate, bool) or not isinstance(sample_rate, int) or sample_rate <= 0:
+            raise ValueError(f"sample_rate must be a positive integer; got {sample_rate!r}")
+
+        try:
+            audiostretchy = self._import_audiostretchy_f32()
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                'audiostretchy stretch requires audiostretchy-f32 package. '
+                'Install with: pip install "double-ender-sync[audiostretchy]"'
+            ) from exc
+
+        processor = audiostretchy.AudioStretch()
+        processor.samples = np.ascontiguousarray(samples.astype(np.float32, copy=False)).reshape(1, -1)
+        processor.samplerate = int(sample_rate)
+        processor.num_channels = 1
+        processor.stretch(ratio=float(stretch_ratio))
+
+        stretched_2d = np.asarray(processor.samples, dtype=np.float32)
+        if stretched_2d.ndim != 2 or stretched_2d.shape[0] != 1:
+            raise RuntimeError(f"audiostretchy-f32 AudioStretch produced unexpected shape: {stretched_2d.shape!r}")
+        stretched = np.ascontiguousarray(stretched_2d[0], dtype=np.float32)
+
+        target_len = max(1, int(round(samples.shape[0] * stretch_ratio)))
+        stretched = stretched.astype(np.float32, copy=False)
+        if stretched.shape[0] > target_len:
+            stretched = stretched[:target_len]
+        elif stretched.shape[0] < target_len:
+            pad = np.zeros(target_len - stretched.shape[0], dtype=np.float32)
+            stretched = np.concatenate([stretched, pad])
+
+        LOGGER.debug("audiostretchy-f32 stretch applied stretch_ratio=%.8f target_len=%d", stretch_ratio, target_len)
+        return stretched
+
+
 _STRETCHER_REGISTRY: dict[str, type[Stretcher]] = {
     "resample": NumpyInterpolationStretcher,
     "pitch_preserving": LibrosaStretcher,
     "rubberband": RubberbandStretcher,
     "soxr": SoxrStretcher,
+    "audiostretchy": AudiostretchyStretcher,
 }
 
 VALID_STRETCH_METHODS: frozenset[str] = frozenset(_STRETCHER_REGISTRY)

@@ -8,8 +8,8 @@ from double_ender_sync.analysis.vad import MODERN_PYANNOTE_SEGMENTATION_MODEL
 
 
 def test_api_exposes_package_version() -> None:
-    assert get_version() == "0.2.3"
-    assert double_ender_sync.__version__ == "0.2.3"
+    assert get_version() == "0.2.4"
+    assert double_ender_sync.__version__ == "0.2.4"
 
 
 def test_build_cli_argv_includes_required_fields() -> None:

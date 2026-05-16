@@ -38,7 +38,7 @@ from double_ender_sync.config import DEFAULT_DRIFT_MODEL_CONFIG
 from double_ender_sync.i18n import TranslationCatalog, resolve_language
 from double_ender_sync.i18n.resolver import extract_explicit_lang
 
-_PITCH_PRESERVING_STRETCH_METHODS: frozenset[str] = frozenset({"pitch_preserving", "rubberband"})
+_PITCH_PRESERVING_STRETCH_METHODS: frozenset[str] = frozenset({"pitch_preserving", "rubberband", "audiostretchy"})
 
 
 class DropListWidget(QListWidget):
@@ -164,6 +164,7 @@ class MainWindow(QMainWindow):
         self.stretch_method_combo.addItem(self.t("gui.stretch_method.pitch_preserving"), "pitch_preserving")
         self.stretch_method_combo.addItem(self.t("gui.stretch_method.rubberband"), "rubberband")
         self.stretch_method_combo.addItem(self.t("gui.stretch_method.soxr"), "soxr")
+        self.stretch_method_combo.addItem(self.t("gui.stretch_method.audiostretchy"), "audiostretchy")
         self.stretch_threshold_input = QDoubleSpinBox()
         self.stretch_threshold_input.setRange(0.0001, 0.1)
         self.stretch_threshold_input.setDecimals(4)

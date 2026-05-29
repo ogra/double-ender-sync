@@ -254,5 +254,75 @@ class AnchorSelectionConfig:
         }
 
 
+@dataclass(frozen=True)
+class AnchorMatchingConfig:
+    """Shared anchor-matching scoring options for CLI, API, and GUI runs.
+
+    Controls NCC peak diagnostics, hard-gate rejection, continuous
+    confidence computation, and optional GCC-PHAT agreement signals.
+    """
+
+    nms_exclusion_seconds: float = 0.05
+    ncc_min_score: float = 0.45
+    ncc_min_margin: float = 0.10
+    ncc_min_prominence: float = 0.06
+    ncc_good_width_seconds: float = 0.005
+    ncc_bad_width_seconds: float = 0.050
+    ncc_margin_low: float = 0.05
+    ncc_margin_high: float = 0.20
+    ncc_prominence_low: float = 0.03
+    ncc_prominence_high: float = 0.15
+    gcc_phat_enabled: bool = True
+    gcc_phat_only_when_ambiguous: bool = True
+    gcc_phat_agreement_tolerance_seconds: float = 0.030
+    min_confidence_for_fit: float = 0.05
+
+    def __post_init__(self) -> None:
+        if not (0.0 < self.nms_exclusion_seconds <= 0.5):
+            raise ValueError("nms_exclusion_seconds must be in (0.0, 0.5]")
+        if not (-1.0 <= self.ncc_min_score < 1.0):
+            raise ValueError("ncc_min_score must be in [-1.0, 1.0)")
+        if not (0.0 <= self.ncc_min_margin <= 1.0):
+            raise ValueError("ncc_min_margin must be in [0.0, 1.0]")
+        if not (0.0 <= self.ncc_min_prominence <= 1.0):
+            raise ValueError("ncc_min_prominence must be in [0.0, 1.0]")
+        if not isfinite(self.ncc_bad_width_seconds):
+            raise ValueError("ncc_bad_width_seconds must be finite")
+        if not (0.0 < self.ncc_good_width_seconds < self.ncc_bad_width_seconds):
+            raise ValueError("ncc_good_width_seconds must be in (0.0, ncc_bad_width_seconds)")
+        if not isfinite(self.ncc_margin_high):
+            raise ValueError("ncc_margin_high must be finite")
+        if not (0.0 <= self.ncc_margin_low < self.ncc_margin_high):
+            raise ValueError("ncc_margin_low must be in [0.0, ncc_margin_high)")
+        if not isfinite(self.ncc_prominence_high):
+            raise ValueError("ncc_prominence_high must be finite")
+        if not (0.0 <= self.ncc_prominence_low < self.ncc_prominence_high):
+            raise ValueError("ncc_prominence_low must be in [0.0, ncc_prominence_high)")
+        if not (0.0 < self.gcc_phat_agreement_tolerance_seconds <= 1.0):
+            raise ValueError("gcc_phat_agreement_tolerance_seconds must be in (0.0, 1.0]")
+        if not (0.0 <= self.min_confidence_for_fit <= 1.0):
+            raise ValueError("min_confidence_for_fit must be in [0.0, 1.0]")
+
+
+    def as_dict(self) -> dict[str, float | bool]:
+        return {
+            "nms_exclusion_seconds": self.nms_exclusion_seconds,
+            "ncc_min_score": self.ncc_min_score,
+            "ncc_min_margin": self.ncc_min_margin,
+            "ncc_min_prominence": self.ncc_min_prominence,
+            "ncc_good_width_seconds": self.ncc_good_width_seconds,
+            "ncc_bad_width_seconds": self.ncc_bad_width_seconds,
+            "ncc_margin_low": self.ncc_margin_low,
+            "ncc_margin_high": self.ncc_margin_high,
+            "ncc_prominence_low": self.ncc_prominence_low,
+            "ncc_prominence_high": self.ncc_prominence_high,
+            "gcc_phat_enabled": self.gcc_phat_enabled,
+            "gcc_phat_only_when_ambiguous": self.gcc_phat_only_when_ambiguous,
+            "gcc_phat_agreement_tolerance_seconds": self.gcc_phat_agreement_tolerance_seconds,
+            "min_confidence_for_fit": self.min_confidence_for_fit,
+        }
+
+
 DEFAULT_ANCHOR_SELECTION_CONFIG = AnchorSelectionConfig()
 DEFAULT_DRIFT_MODEL_CONFIG = DriftModelConfig()
+DEFAULT_ANCHOR_MATCHING_CONFIG = AnchorMatchingConfig()

@@ -12,9 +12,10 @@ from double_ender_sync.analysis.drift import match_anchors_for_drift, select_dri
 from double_ender_sync.analysis.vad import DEFAULT_PYANNOTE_MODEL, build_vad_strategy, detect_speech_segments
 from double_ender_sync.audio.io import AudioLoadError, cleanup_temp_files, load_audio_track
 from double_ender_sync.audio.render import write_synced_track
-from double_ender_sync.config import DEFAULT_ANCHOR_SELECTION_CONFIG, DEFAULT_DRIFT_MODEL_CONFIG, AnchorSelectionConfig, DriftModelConfig
+from double_ender_sync.config import DEFAULT_ANCHOR_MATCHING_CONFIG, DEFAULT_ANCHOR_SELECTION_CONFIG, DEFAULT_DRIFT_MODEL_CONFIG, AnchorMatchingConfig, AnchorSelectionConfig, DriftModelConfig
 from double_ender_sync.alignment.timeline import apply_global_time_correction
 from double_ender_sync.alignment.local_adjust import apply_local_adjustment
+from double_ender_sync.i18n.catalog import TranslationCatalog
 from double_ender_sync.i18n.resolver import resolve_language
 from double_ender_sync.report.report import (
     build_alignment_diagnostics_report,
@@ -137,6 +138,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--anchors-per-bin", type=int, default=DEFAULT_ANCHOR_SELECTION_CONFIG.anchors_per_bin, help="Per-bin anchor quota before global budget fill (default: auto)")
     parser.add_argument("--min-snr-db", type=float, default=DEFAULT_ANCHOR_SELECTION_CONFIG.min_snr_db, help="Reject anchor candidates below this local SNR in dB (default: disabled)")
     parser.add_argument("--spectral-flatness-threshold", type=float, default=DEFAULT_ANCHOR_SELECTION_CONFIG.spectral_flatness_threshold, help="Reject anchor candidates above this spectral flatness value from 0.0 to 1.0 (default: disabled)")
+    parser.add_argument("--nms-exclusion-seconds", type=float, default=DEFAULT_ANCHOR_MATCHING_CONFIG.nms_exclusion_seconds, help="Non-maximum suppression exclusion radius in seconds for NCC peak search")
+    parser.add_argument("--ncc-min-score", type=float, default=DEFAULT_ANCHOR_MATCHING_CONFIG.ncc_min_score, help="Minimum NCC best-peak score to accept a match (hard gate)")
+    parser.add_argument("--ncc-min-margin", type=float, default=DEFAULT_ANCHOR_MATCHING_CONFIG.ncc_min_margin, help="Minimum NCC margin between best and second peak to accept a match")
+    parser.add_argument("--ncc-min-prominence", type=float, default=DEFAULT_ANCHOR_MATCHING_CONFIG.ncc_min_prominence, help="Minimum NCC peak prominence to accept a match")
+    parser.add_argument("--ncc-good-width-seconds", type=float, default=DEFAULT_ANCHOR_MATCHING_CONFIG.ncc_good_width_seconds, help="NCC peak width threshold for optimal sharpness score")
+    parser.add_argument("--ncc-bad-width-seconds", type=float, default=DEFAULT_ANCHOR_MATCHING_CONFIG.ncc_bad_width_seconds, help="NCC peak width threshold for minimum sharpness score")
+    parser.add_argument("--ncc-margin-low", type=float, default=DEFAULT_ANCHOR_MATCHING_CONFIG.ncc_margin_low, help="NCC margin normalization lower bound for uniqueness scoring")
+    parser.add_argument("--ncc-margin-high", type=float, default=DEFAULT_ANCHOR_MATCHING_CONFIG.ncc_margin_high, help="NCC margin normalization upper bound for uniqueness scoring")
+    parser.add_argument("--ncc-prominence-low", type=float, default=DEFAULT_ANCHOR_MATCHING_CONFIG.ncc_prominence_low, help="NCC prominence normalization lower bound for uniqueness scoring")
+    parser.add_argument("--ncc-prominence-high", type=float, default=DEFAULT_ANCHOR_MATCHING_CONFIG.ncc_prominence_high, help="NCC prominence normalization upper bound for uniqueness scoring")
+    parser.add_argument("--gcc-phat-enabled", dest="gcc_phat_enabled", action="store_true", default=DEFAULT_ANCHOR_MATCHING_CONFIG.gcc_phat_enabled, help="Enable GCC-PHAT cross-check scoring")
+    parser.add_argument("--no-gcc-phat", dest="gcc_phat_enabled", action="store_false", help="Disable GCC-PHAT cross-check scoring")
+    parser.add_argument("--gcc-phat-only-when-ambiguous", dest="gcc_phat_only_when_ambiguous", action="store_true", default=DEFAULT_ANCHOR_MATCHING_CONFIG.gcc_phat_only_when_ambiguous, help="Only run GCC-PHAT when NCC match is ambiguous")
+    parser.add_argument("--no-gcc-phat-ambiguous-only", dest="gcc_phat_only_when_ambiguous", action="store_false", help="Run GCC-PHAT for all matches")
+    parser.add_argument("--gcc-phat-agreement-tolerance-seconds", type=float, default=DEFAULT_ANCHOR_MATCHING_CONFIG.gcc_phat_agreement_tolerance_seconds, help="Maximum allowed lag disagreement between NCC and GCC-PHAT peaks")
+    parser.add_argument("--min-confidence-for-fit", type=float, default=DEFAULT_ANCHOR_MATCHING_CONFIG.min_confidence_for_fit, help="Minimum anchor confidence required for drift model fitting")
     parser.add_argument("--log-file", type=Path, default=None, help="Optional log file path (default: <out>/double-ender-sync.log)")
     parser.add_argument("--lang", type=str, default=None, help="UI/report language code (e.g. en, ja). Regional codes like en-US are normalized to en.")
     return parser.parse_args(argv)
@@ -183,14 +200,16 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
     _configure_logging(debug_enabled=args.debug, log_file=log_file)
     LOGGER.info("Starting alignment run")
     resolved_lang = resolve_language(explicit_lang=args.lang)
+    catalog = TranslationCatalog(resolved_lang)
+    t = catalog.t
     LOGGER.debug("Resolved language=%s (explicit=%s)", resolved_lang, args.lang)
     LOGGER.debug("Parsed args: %s", vars(args))
 
     if args.analysis_sample_rate <= 0:
-        print("error: --analysis-sample-rate must be positive", file=sys.stderr)
+        print(t("cli.error.analysis_sample_rate_positive"), file=sys.stderr)
         return EXIT_USAGE_ERROR
     if args.stretch_ratio_warning_threshold < 0:
-        print("error: --stretch-ratio-warning-threshold must be >= 0", file=sys.stderr)
+        print(t("cli.error.stretch_threshold_non_negative"), file=sys.stderr)
         return EXIT_USAGE_ERROR
     try:
         anchor_selection_config = AnchorSelectionConfig(
@@ -207,7 +226,7 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
             spectral_flatness_threshold=args.spectral_flatness_threshold,
         )
     except ValueError as exc:
-        print(f"error: invalid anchor selection options: {exc}", file=sys.stderr)
+        print(t("cli.error.invalid_anchor_selection", exc=exc), file=sys.stderr)
         return EXIT_USAGE_ERROR
     try:
         drift_model_config = DriftModelConfig(
@@ -235,20 +254,42 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
             kalman_validation_sample_count=args.kalman_validation_sample_count,
         )
     except ValueError as exc:
-        print(f"error: invalid drift model options: {exc}", file=sys.stderr)
+        print(t("cli.error.invalid_drift_model", exc=exc), file=sys.stderr)
+        return EXIT_USAGE_ERROR
+    try:
+        anchor_matching_config = AnchorMatchingConfig(
+            nms_exclusion_seconds=args.nms_exclusion_seconds,
+            ncc_min_score=args.ncc_min_score,
+            ncc_min_margin=args.ncc_min_margin,
+            ncc_min_prominence=args.ncc_min_prominence,
+            ncc_good_width_seconds=args.ncc_good_width_seconds,
+            ncc_bad_width_seconds=args.ncc_bad_width_seconds,
+            ncc_margin_low=args.ncc_margin_low,
+            ncc_margin_high=args.ncc_margin_high,
+            ncc_prominence_low=args.ncc_prominence_low,
+            ncc_prominence_high=args.ncc_prominence_high,
+            gcc_phat_enabled=args.gcc_phat_enabled,
+            gcc_phat_only_when_ambiguous=args.gcc_phat_only_when_ambiguous,
+            gcc_phat_agreement_tolerance_seconds=args.gcc_phat_agreement_tolerance_seconds,
+            min_confidence_for_fit=args.min_confidence_for_fit,
+        )
+    except ValueError as exc:
+        print(t("cli.error.invalid_anchor_matching", exc=exc), file=sys.stderr)
         return EXIT_USAGE_ERROR
     anchor_selection_metadata = anchor_selection_config.as_dict()
+    anchor_matching_metadata = anchor_matching_config.as_dict()
     drift_model_selection_metadata = drift_model_config.as_dict()
     configuration_snapshot = None
     if args.verbose_report:
         configuration_snapshot = {
             "drift_model_selection": drift_model_selection_metadata,
             "anchor_selection": anchor_selection_metadata,
+            "anchor_matching": anchor_matching_metadata,
         }
 
     selected_pyannote_model = args.pyannote_model or DEFAULT_PYANNOTE_MODEL
     if args.pyannote_model is not None and args.vad_strategy != "pyannote":
-        print("error: --pyannote-model is only valid when --vad-strategy pyannote is selected", file=sys.stderr)
+        print(t("cli.error.pyannote_model_invalid"), file=sys.stderr)
         return EXIT_USAGE_ERROR
     if args.vad_strategy == "pyannote":
         LOGGER.info("Selected pyannote VAD model: %s", selected_pyannote_model)
@@ -273,7 +314,7 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
             len(master.analysis_samples),
         )
     except AudioLoadError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print(t("cli.error.audio_load_failed", exc=exc), file=sys.stderr)
         return 1
 
     track_details: dict[str, dict] = {}
@@ -286,7 +327,7 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
             try:
                 track = load_audio_track(track_path, analysis_sample_rate=args.analysis_sample_rate, include_original_samples=False)
             except AudioLoadError as exc:
-                print(f"error: {exc}", file=sys.stderr)
+                print(t("cli.error.audio_load_failed", exc=exc), file=sys.stderr)
                 return 1
             loaded_tracks.append(track)
             progress.update(f"{track.name}: analysis audio loaded")
@@ -331,9 +372,10 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
                     sample_rate=args.analysis_sample_rate,
                     anchors=anchor_candidates,
                     initial_offset_seconds=offset_estimate.offset_seconds,
+                    matching_config=anchor_matching_config,
                 )
                 LOGGER.debug("%s: completed drift anchor matching", track.name)
-                drift_estimate = select_drift_model(drift_matches, drift_model_config, local_duration_seconds=track.duration_seconds)
+                drift_estimate = select_drift_model(drift_matches, drift_model_config, local_duration_seconds=track.duration_seconds, matching_config=anchor_matching_config)
                 LOGGER.debug("%s: drift_matches=%d drift_estimated=%s", track.name, len(drift_matches), drift_estimate is not None)
             progress.update(f"{track.name}: drift estimation completed")
 
@@ -343,23 +385,25 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
             if drift_estimate is not None:
                 stretch_delta = abs(drift_estimate.stretch_ratio - 1.0)
                 if stretch_delta > args.stretch_ratio_warning_threshold:
-                    warning_message = (
-                        f"warning: {track.name}: stretch_ratio={drift_estimate.stretch_ratio:.6f} "
-                        f"(delta={stretch_delta:.6f}) exceeds threshold={args.stretch_ratio_warning_threshold:.6f}"
+                    warning_message = t(
+                        "cli.warn.stretch_ratio",
+                        name=track.name,
+                        stretch_ratio=f"{drift_estimate.stretch_ratio:.6f}",
+                        delta=f"{stretch_delta:.6f}",
+                        threshold=f"{args.stretch_ratio_warning_threshold:.6f}",
                     )
                     LOGGER.warning(warning_message)
                     print(warning_message, file=sys.stderr)
                     if not args.stretch_ratio_auto_continue:
                         if not sys.stdin.isatty():
                             print(
-                                "error: stretch ratio exceeded threshold and no TTY confirmation is available. "
-                                'Use --stretch-ratio-auto-continue to proceed.',
+                                t("cli.error.stretch_no_tty"),
                                 file=sys.stderr,
                             )
                             return EXIT_STRETCH_CONFIRMATION_REQUIRED
-                        response = input("Continue alignment for this track? [y/N]: ").strip().lower()
+                        response = input(t("cli.prompt.continue_alignment")).strip().lower()
                         if response not in {"y", "yes"}:
-                            print("error: aborted by user due to excessive stretch ratio", file=sys.stderr)
+                            print(t("cli.error.aborted_by_user"), file=sys.stderr)
                             return EXIT_STRETCH_CONFIRMATION_REQUIRED
                 LOGGER.debug("%s: loading original samples for final render", track.name)
                 track_with_original = load_audio_track(track_path, analysis_sample_rate=args.analysis_sample_rate, include_original_samples=True)
@@ -373,7 +417,7 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
                         stretch_method=args.stretch_method,
                     )
                 except (RuntimeError, ValueError) as exc:
-                    print(f'error: {exc}', file=sys.stderr)
+                    print(t("cli.error.audio_load_failed", exc=exc), file=sys.stderr)
                     LOGGER.exception("Global correction failed")
                     return EXIT_RUNTIME_ERROR
                 LOGGER.debug(
@@ -442,6 +486,7 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
                     "pyannote_model": selected_pyannote_model if args.vad_strategy == "pyannote" else None,
                 },
                 "anchor_selection": anchor_selection_metadata,
+                "anchor_matching": anchor_matching_metadata,
                 "drift_model_selection": drift_model_selection_metadata,
                 "local_adjustment": None if local_adjustment is None else {
                     "events": [
@@ -477,18 +522,18 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
         report_path = write_sync_report(report, args.out)
         markers_path = write_sync_markers_csv(report, args.out, track_details=track_details)
         warnings_path = write_warnings_text(report, args.out)
-        progress.update("Reports generated")
+        progress.update(t("cli.output.reports_generated"))
         LOGGER.info("Completed alignment run")
-        print(f"Wrote {report_path}")
+        print(t("cli.output.wrote", path=str(report_path)))
         if event_callback is not None:
             event_callback(f"Wrote {report_path}")
-        print(f"Wrote {markers_path}")
+        print(t("cli.output.wrote", path=str(markers_path)))
         if event_callback is not None:
             event_callback(f"Wrote {markers_path}")
-        print(f"Wrote {warnings_path}")
+        print(t("cli.output.wrote", path=str(warnings_path)))
         if event_callback is not None:
             event_callback(f"Wrote {warnings_path}")
-        print(f"Wrote {log_file}")
+        print(t("cli.output.wrote", path=str(log_file)))
         if event_callback is not None:
             event_callback(f"Wrote {log_file}")
         return 0

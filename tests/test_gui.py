@@ -8,8 +8,22 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from double_ender_sync.api import AlignmentOptions, build_cli_argv
 from double_ender_sync.analysis.vad import DEFAULT_PYANNOTE_MODEL, MODERN_PYANNOTE_SEGMENTATION_MODEL
-from double_ender_sync.config import DEFAULT_ANCHOR_SELECTION_CONFIG, DEFAULT_DRIFT_MODEL_CONFIG
+from double_ender_sync.config import (
+    DEFAULT_ANCHOR_MATCHING_CONFIG,
+    DEFAULT_ANCHOR_SELECTION_CONFIG,
+    DEFAULT_DRIFT_MODEL_CONFIG,
+)
 from double_ender_sync.gui import AlignmentWorker, MainWindow, extract_audio_paths
+
+
+def _capture_alignment_options_from_window(window, tmp_path, monkeypatch):
+    captured: dict[str, AlignmentOptions] = {}
+    window.master_input.setText("master.wav")
+    window.track_list.addItem("speaker.wav")
+    window.output_input.setText(str(tmp_path))
+    monkeypatch.setattr(window, "_start_worker", lambda options: captured.setdefault("options", options))
+    window.run()
+    return captured["options"]
 
 
 def _app() -> QApplication:
@@ -137,7 +151,7 @@ def test_gui_displays_package_version_in_corner() -> None:
     _app()
     window = MainWindow(lang="en")
 
-    assert window.version_label.text() == "v0.2.4"
+    assert window.version_label.text() == "v0.2.5"
     assert window.version_label.alignment() & Qt.AlignRight
     assert window.version_label.alignment() & Qt.AlignBottom
 
@@ -500,3 +514,167 @@ def test_gui_run_forwards_stretch_method_from_combo(monkeypatch, tmp_path) -> No
     window.run()
 
     assert captured["options"].stretch_method == "soxr"
+
+
+def test_gui_advanced_tabs_present_in_expected_order() -> None:
+    _app()
+    window = MainWindow(lang="en")
+    labels = [window.advanced_tabs.tabText(i) for i in range(window.advanced_tabs.count())]
+    assert labels == [
+        "Basic / Output",
+        "VAD",
+        "Drift model",
+        "Anchor selection",
+        "Anchor matching",
+    ]
+
+
+def test_gui_advanced_settings_open_in_modal_dialog() -> None:
+    _app()
+    window = MainWindow(lang="en")
+    # The advanced tabs are not hosted directly on the main window anymore;
+    # they live inside a reusable modal dialog opened via the button.
+    assert window.advanced_button.text() == window.catalog.t("gui.advanced_settings_open")
+    window.open_advanced_settings()
+    dialog = window._advanced_dialog
+    assert dialog is not None
+    assert dialog.isModal()
+    assert window.advanced_tabs.parent() is not None
+    # Re-opening reuses the same dialog instance (state is preserved).
+    window.open_advanced_settings()
+    assert window._advanced_dialog is dialog
+    dialog.close()
+
+
+def test_gui_pyannote_selection_emphasizes_advanced_button() -> None:
+    _app()
+    window = MainWindow(lang="en")
+    base_text = window.catalog.t("gui.advanced_settings_open")
+    attention_text = window.catalog.t("gui.advanced_settings_attention")
+    assert window.advanced_button.text() == base_text
+    pyannote_index = window.vad_strategy_input.findData("pyannote")
+    window.vad_strategy_input.setCurrentIndex(pyannote_index)
+    # The button is emphasized and the VAD tab is preselected so the pyannote
+    # model field is visible the moment the dialog opens.
+    assert window.advanced_button.text() == attention_text
+    assert window.advanced_tabs.currentIndex() == 1
+    adaptive_index = window.vad_strategy_input.findData("adaptive_rms")
+    window.vad_strategy_input.setCurrentIndex(adaptive_index)
+    assert window.advanced_button.text() == base_text
+
+
+def test_gui_anchor_selection_defaults_match_shared_config(monkeypatch, tmp_path) -> None:
+    _app()
+    window = MainWindow(lang="en")
+    options = _capture_alignment_options_from_window(window, tmp_path, monkeypatch)
+    assert options.anchor_selection == DEFAULT_ANCHOR_SELECTION_CONFIG
+
+
+def test_gui_anchor_matching_defaults_match_shared_config(monkeypatch, tmp_path) -> None:
+    _app()
+    window = MainWindow(lang="en")
+    options = _capture_alignment_options_from_window(window, tmp_path, monkeypatch)
+    assert options.anchor_matching == DEFAULT_ANCHOR_MATCHING_CONFIG
+
+
+def test_gui_nullable_anchor_selection_special_values_become_none(monkeypatch, tmp_path) -> None:
+    _app()
+    window = MainWindow(lang="en")
+    window.max_anchor_count_input.setValue(0)
+    window.stratified_bin_count_input.setValue(0)
+    window.anchors_per_bin_input.setValue(0)
+    # min_snr_db and spectral_flatness default to their disabled sentinels.
+    options = _capture_alignment_options_from_window(window, tmp_path, monkeypatch)
+    selection = options.anchor_selection
+    assert selection.max_anchor_count is None
+    assert selection.stratified_bin_count is None
+    assert selection.anchors_per_bin is None
+    assert selection.min_snr_db is None
+    assert selection.spectral_flatness_threshold is None
+
+
+def test_gui_forwards_custom_anchor_selection_values(monkeypatch, tmp_path) -> None:
+    _app()
+    window = MainWindow(lang="en")
+    window.max_anchor_count_input.setValue(40)
+    window.stratified_bin_count_input.setValue(6)
+    window.anchors_per_bin_input.setValue(3)
+    window.min_snr_db_input.setValue(12.5)
+    window.spectral_flatness_input.setValue(0.25)
+    options = _capture_alignment_options_from_window(window, tmp_path, monkeypatch)
+    selection = options.anchor_selection
+    assert selection.max_anchor_count == 40
+    assert selection.stratified_bin_count == 6
+    assert selection.anchors_per_bin == 3
+    assert selection.min_snr_db == 12.5
+    assert selection.spectral_flatness_threshold == 0.25
+    argv = build_cli_argv(options)
+    assert "--max-anchor-count" in argv and "40" in argv
+    assert "--stratified-bin-count" in argv
+    assert "--min-snr-db" in argv
+
+
+def test_gui_anchor_density_bounds_clamp(monkeypatch, tmp_path) -> None:
+    _app()
+    window = MainWindow(lang="en")
+    # Density cannot exceed the max density bound.
+    window.max_anchor_density_input.setValue(1.5)
+    window.anchor_density_input.setValue(5.0)
+    assert window.anchor_density_input.value() <= window.max_anchor_density_input.value()
+
+
+def test_gui_anchor_durations_keep_ordering(monkeypatch, tmp_path) -> None:
+    _app()
+    window = MainWindow(lang="en")
+    window.min_anchor_duration_input.setValue(6.0)
+    assert window.min_anchor_duration_input.value() <= window.base_anchor_duration_input.value()
+    assert window.base_anchor_duration_input.value() <= window.max_anchor_duration_input.value()
+
+
+def test_gui_max_anchor_count_clamped_to_min(monkeypatch, tmp_path) -> None:
+    _app()
+    window = MainWindow(lang="en")
+    window.max_anchor_count_input.setValue(10)
+    window.min_anchor_count_input.setValue(30)
+    # Capped max must not fall below the configured minimum.
+    assert window.max_anchor_count_input.value() >= window.min_anchor_count_input.value()
+
+
+def test_gui_ncc_low_high_pairs_stay_ordered() -> None:
+    _app()
+    window = MainWindow(lang="en")
+    window.ncc_margin_high_input.setValue(0.1)
+    window.ncc_margin_low_input.setValue(0.9)
+    assert window.ncc_margin_low_input.value() < window.ncc_margin_high_input.value()
+    window.ncc_prominence_high_input.setValue(0.1)
+    window.ncc_prominence_low_input.setValue(0.9)
+    assert window.ncc_prominence_low_input.value() < window.ncc_prominence_high_input.value()
+    window.ncc_good_width_input.setValue(0.9)
+    assert window.ncc_good_width_input.value() < window.ncc_bad_width_input.value()
+
+
+def test_gui_gcc_phat_gate_disables_dependents() -> None:
+    _app()
+    window = MainWindow(lang="en")
+    window.gcc_phat_enabled_checkbox.setChecked(False)
+    assert not window.gcc_phat_only_when_ambiguous_checkbox.isEnabled()
+    assert not window.gcc_phat_tolerance_input.isEnabled()
+    window.gcc_phat_enabled_checkbox.setChecked(True)
+    assert window.gcc_phat_only_when_ambiguous_checkbox.isEnabled()
+    assert window.gcc_phat_tolerance_input.isEnabled()
+
+
+def test_gui_forwards_custom_anchor_matching_values(monkeypatch, tmp_path) -> None:
+    _app()
+    window = MainWindow(lang="en")
+    window.ncc_min_score_input.setValue(0.6)
+    window.min_confidence_for_fit_input.setValue(0.2)
+    window.gcc_phat_enabled_checkbox.setChecked(False)
+    options = _capture_alignment_options_from_window(window, tmp_path, monkeypatch)
+    matching = options.anchor_matching
+    assert matching.ncc_min_score == 0.6
+    assert matching.min_confidence_for_fit == 0.2
+    assert matching.gcc_phat_enabled is False
+    argv = build_cli_argv(options)
+    assert "--ncc-min-score" in argv
+    assert "--no-gcc-phat" in argv

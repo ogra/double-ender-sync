@@ -7,8 +7,14 @@ import numpy as np
 from scipy.interpolate import PchipInterpolator
 
 from double_ender_sync.analysis.anchors import AnchorCandidate
-from double_ender_sync.analysis.features import extract_anchor_feature, normalized_correlation_scores
-from double_ender_sync.config import DriftModelConfig
+from double_ender_sync.analysis.features import (
+    clamp01,
+    extract_anchor_feature,
+    gcc_phat_scores,
+    ncc_peak_diagnostics,
+    normalized_correlation_scores,
+)
+from double_ender_sync.config import AnchorMatchingConfig, DriftModelConfig
 
 
 LOGGER = logging.getLogger("double_ender_sync")
@@ -27,6 +33,20 @@ class AnchorMatch:
     residual_ms: float | None = None
     included_in_regression: bool = False
     rejected_reason: str | None = None
+
+    ncc_best_score: float | None = None
+    ncc_second_score: float | None = None
+    ncc_margin: float | None = None
+    ncc_prominence: float | None = None
+    ncc_width_seconds: float | None = None
+    ncc_plateau_size_seconds: float | None = None
+    ncc_peak_lag_seconds: float | None = None
+    gcc_phat_peak_lag_seconds: float | None = None
+    gcc_phat_agreement_seconds: float | None = None
+    match_quality: float | None = None
+    match_uniqueness: float | None = None
+    match_sharpness: float | None = None
+    match_agreement: float | None = None
 
 
 @dataclass
@@ -651,6 +671,85 @@ class PiecewiseLinearFitResult:
 DriftEstimate = LinearDrift
 
 
+def _compute_ncc_continuous_confidence(
+    diagnostics: object,
+    config: AnchorMatchingConfig,
+    sample_rate: int,
+) -> tuple[float, float, float]:
+    ncc_score_denom = 1.0 - config.ncc_min_score
+    if ncc_score_denom <= 1e-15:
+        quality = 1.0 if diagnostics.best_score >= config.ncc_min_score else 0.0
+    else:
+        quality = clamp01(
+            (diagnostics.best_score - config.ncc_min_score) / ncc_score_denom
+        )
+
+    margin = diagnostics.margin
+    prominence = diagnostics.prominence
+
+    prom_range = config.ncc_prominence_high - config.ncc_prominence_low
+
+    def _safe_prominence_uniqueness(prom: float) -> float:
+        if prom_range <= 1e-15:
+            return 1.0 if prom >= config.ncc_prominence_high else 0.0
+        return clamp01((prom - config.ncc_prominence_low) / prom_range)
+
+    def _safe_margin_uniqueness(marg: float) -> float:
+        margin_low_shifted = config.ncc_margin_low * 0.4
+        margin_range = config.ncc_margin_high - margin_low_shifted
+        if margin_range <= 1e-15:
+            return 1.0 if marg >= margin_low_shifted else 0.0
+        return clamp01((marg - margin_low_shifted) / margin_range)
+
+    def _safe_margin_uniqueness_full(marg: float) -> float:
+        margin_range = config.ncc_margin_high - config.ncc_margin_low
+        if margin_range <= 1e-15:
+            return 1.0 if marg >= config.ncc_margin_low else 0.0
+        return clamp01((marg - config.ncc_margin_low) / margin_range)
+
+    if margin is None:
+        uniqueness = _safe_prominence_uniqueness(prominence)
+    elif prominence >= config.ncc_prominence_high:
+        uniqueness = min(
+            _safe_margin_uniqueness(margin),
+            _safe_prominence_uniqueness(prominence),
+        )
+    else:
+        uniqueness = min(
+            _safe_margin_uniqueness_full(margin),
+            _safe_prominence_uniqueness(prominence),
+        )
+
+    width_seconds = diagnostics.width_samples / max(1.0, float(sample_rate))
+
+    width_range = config.ncc_bad_width_seconds - config.ncc_good_width_seconds
+    if width_range <= 1e-15:
+        sharpness = 1.0 if width_seconds <= config.ncc_good_width_seconds else 0.0
+    else:
+        sharpness = 1.0 - clamp01(
+            (width_seconds - config.ncc_good_width_seconds) / width_range
+        )
+
+    return quality, uniqueness, sharpness
+
+
+def _match_diagnostics_passes_hard_gate(
+    diagnostics: object,
+    config: AnchorMatchingConfig,
+) -> tuple[bool, str | None]:
+    if diagnostics.best_score < config.ncc_min_score:
+        return False, "ncc_best_score_below_min"
+
+    margin = diagnostics.margin
+    if margin is not None and margin < config.ncc_min_margin:
+        return False, "ncc_margin_below_min"
+
+    if diagnostics.prominence < config.ncc_min_prominence:
+        return False, "ncc_prominence_below_min"
+
+    return True, None
+
+
 def match_anchors_for_drift(
     local_samples: np.ndarray,
     master_samples: np.ndarray,
@@ -658,7 +757,12 @@ def match_anchors_for_drift(
     anchors: list[AnchorCandidate],
     initial_offset_seconds: float,
     search_radius_seconds: float = 6.0,
+    matching_config: AnchorMatchingConfig | None = None,
 ) -> list[AnchorMatch]:
+    if matching_config is None:
+        from double_ender_sync.config import DEFAULT_ANCHOR_MATCHING_CONFIG
+        matching_config = DEFAULT_ANCHOR_MATCHING_CONFIG
+
     matches: list[AnchorMatch] = []
     master_duration = master_samples.shape[0] / sample_rate
 
@@ -693,23 +797,125 @@ def match_anchors_for_drift(
 
         scores = normalized_correlation_scores(search_region, feature)
 
-        best_idx = int(np.argmax(scores))
-        best_score = float(scores[best_idx])
-        master_start = (search_start_idx + best_idx) / sample_rate
+        peak_diagnostics = ncc_peak_diagnostics(
+            scores,
+            sample_rate=sample_rate,
+            nms_exclusion_seconds=matching_config.nms_exclusion_seconds,
+        )
+
+        if peak_diagnostics is None:
+            continue
+
+        best_score = peak_diagnostics.best_score
+        best_lag_samples = peak_diagnostics.best_lag_samples
+        second_score = peak_diagnostics.second_score
+        margin = peak_diagnostics.margin
+        prominence = peak_diagnostics.prominence
+        width_samples = peak_diagnostics.width_samples
+        plateau_size_samples = peak_diagnostics.plateau_size_samples
+
+        ncc_width_seconds = width_samples / max(1.0, float(sample_rate))
+        ncc_plateau_size_seconds = plateau_size_samples / max(1.0, float(sample_rate))
+        ncc_peak_lag_seconds = best_lag_samples / sample_rate
+
+        master_start = (search_start_idx + best_lag_samples) / sample_rate
         master_end = master_start + (local_clip.size / sample_rate)
         offset_seconds = master_start - anchor.local_start
-        confidence = max(0.0, min(1.0, ((best_score + 1.0) / 2.0) * anchor.confidence))
 
-        matches.append(
-            AnchorMatch(
-                local_start=anchor.local_start,
-                local_end=anchor.local_end,
-                master_start=master_start,
-                master_end=master_end,
-                offset_seconds=offset_seconds,
-                confidence=confidence,
-                score=best_score,
-            )
+        passes_gate, rejection_reason = _match_diagnostics_passes_hard_gate(
+            peak_diagnostics, matching_config
+        )
+
+        legacy_score = best_score
+        quality, uniqueness, sharpness = _compute_ncc_continuous_confidence(
+            peak_diagnostics, matching_config, sample_rate
+        )
+        agreement = 1.0
+        gcc_lag_seconds: float | None = None
+        gcc_agreement_seconds: float | None = None
+        ncc_is_ambiguous = not passes_gate or (
+            margin is not None
+            and margin < matching_config.ncc_min_margin * 2.0
+            and prominence < matching_config.ncc_min_prominence * 5.0
+        ) or prominence < matching_config.ncc_min_prominence * 2.0
+
+        if matching_config.gcc_phat_enabled and (
+            not matching_config.gcc_phat_only_when_ambiguous or ncc_is_ambiguous
+        ):
+            try:
+                gcc_scores = gcc_phat_scores(search_region, feature)
+                if gcc_scores.size > 0:
+                    gcc_best_lag = int(np.argmax(gcc_scores))
+                    gcc_best_value = float(gcc_scores[gcc_best_lag])
+                    gcc_lag_seconds = gcc_best_lag / sample_rate
+                    gcc_agreement_seconds = abs(ncc_peak_lag_seconds - gcc_lag_seconds)
+                    if gcc_best_value >= 0.05 and gcc_agreement_seconds <= matching_config.gcc_phat_agreement_tolerance_seconds * 3.0:
+                        agreement = clamp01(
+                            1.0
+                            - gcc_agreement_seconds
+                            / matching_config.gcc_phat_agreement_tolerance_seconds
+                        )
+                    else:
+                        gcc_lag_seconds = None
+                        gcc_agreement_seconds = None
+                        agreement = 0.0
+            except Exception:
+                LOGGER.debug(
+                    "drift-anchor gcc-phat failed for local_start=%.3f; using agreement=1.0",
+                    anchor.local_start,
+                )
+
+        anchor_confidence = getattr(anchor, "confidence", 1.0)
+        confidence_value = (
+            anchor_confidence * quality * uniqueness * sharpness * agreement
+        )
+        confidence_value = max(0.0, min(1.0, confidence_value))
+
+        if not passes_gate or confidence_value < matching_config.min_confidence_for_fit:
+            rejection_reason = rejection_reason or "confidence_below_min_for_fit"
+
+        match = AnchorMatch(
+            local_start=anchor.local_start,
+            local_end=anchor.local_end,
+            master_start=master_start,
+            master_end=master_end,
+            offset_seconds=offset_seconds,
+            confidence=confidence_value,
+            score=legacy_score,
+            rejected_reason=rejection_reason,
+            ncc_best_score=best_score,
+            ncc_second_score=second_score,
+            ncc_margin=margin,
+            ncc_prominence=prominence,
+            ncc_width_seconds=ncc_width_seconds,
+            ncc_plateau_size_seconds=ncc_plateau_size_seconds,
+            ncc_peak_lag_seconds=ncc_peak_lag_seconds,
+            gcc_phat_peak_lag_seconds=gcc_lag_seconds,
+            gcc_phat_agreement_seconds=gcc_agreement_seconds,
+            match_quality=quality,
+            match_uniqueness=uniqueness,
+            match_sharpness=sharpness,
+            match_agreement=agreement,
+        )
+        matches.append(match)
+
+        margin_str = f"{margin:.4f}" if margin is not None else "None"
+        LOGGER.debug(
+            "drift-anchor-result local_start=%.3f master_start=%.3f "
+            "ncc_best=%.4f ncc_margin=%s ncc_prom=%.4f "
+            "quality=%.4f uniqueness=%.4f sharpness=%.4f agreement=%.4f "
+            "confidence=%.4f rejected=%s",
+            anchor.local_start,
+            master_start,
+            best_score,
+            margin_str,
+            prominence,
+            quality,
+            uniqueness,
+            sharpness,
+            agreement,
+            confidence_value,
+            str(rejection_reason) if rejection_reason else "None",
         )
 
     return matches
@@ -719,20 +925,46 @@ def fit_linear_drift_model(
     anchor_matches: list[AnchorMatch],
     local_duration_seconds: float | None = None,
     config: DriftModelConfig | None = None,
+    matching_config: AnchorMatchingConfig | None = None,
 ) -> DriftEstimate | None:
-    if len(anchor_matches) < 2:
-        return None
+    if matching_config is None:
+        from double_ender_sync.config import DEFAULT_ANCHOR_MATCHING_CONFIG
+        matching_config = DEFAULT_ANCHOR_MATCHING_CONFIG
+
+    _FIT_PRODUCED_REASONS = frozenset({
+        "excluded_by_min_confidence",
+        "confidence_below_min_for_fit",
+        "residual_outlier",
+        "outside_spline_support",
+        "outside_piecewise_support",
+    })
+    for match in anchor_matches:
+        if match.rejected_reason in _FIT_PRODUCED_REASONS:
+            match.rejected_reason = None
+
+    eligible_matches = [
+        match for match in anchor_matches
+        if match.rejected_reason is None
+    ]
+    eligible_matches = [
+        match for match in eligible_matches
+        if match.confidence >= matching_config.min_confidence_for_fit
+    ]
 
     for match in anchor_matches:
         match.included_in_regression = False
-        match.rejected_reason = None
+        if match not in eligible_matches and match.rejected_reason is None:
+            match.rejected_reason = "excluded_by_min_confidence"
         match.residual_ms = None
 
-    local = np.array([m.local_start for m in anchor_matches], dtype=np.float64)
-    master = np.array([m.master_start for m in anchor_matches], dtype=np.float64)
-    weights = np.array([max(m.confidence, 1e-3) for m in anchor_matches], dtype=np.float64)
+    if len(eligible_matches) < 2:
+        return None
 
-    kept_indices = np.arange(len(anchor_matches))
+    local = np.array([m.local_start for m in eligible_matches], dtype=np.float64)
+    master = np.array([m.master_start for m in eligible_matches], dtype=np.float64)
+    weights = np.array([max(m.confidence, 1e-3) for m in eligible_matches], dtype=np.float64)
+
+    kept_indices = np.arange(len(eligible_matches))
     residual_rejection_threshold_ms: float | None = None
     for _ in range(2):
         x = local[kept_indices]
@@ -756,24 +988,37 @@ def fit_linear_drift_model(
     residuals_ms = (y - (stretch * x + offset)) * 1000.0
 
     kept_index_set = set(int(idx) for idx in kept_indices)
-    for idx, match in enumerate(anchor_matches):
+
+    eligible_idx_by_id = {id(match): idx for idx, match in enumerate(eligible_matches)}
+
+    for full_idx, match in enumerate(anchor_matches):
         residual_ms = (match.master_start - (stretch * match.local_start + offset)) * 1000.0
         match.residual_ms = float(residual_ms)
-        match.included_in_regression = idx in kept_index_set
-        if not match.included_in_regression:
+        eligible_idx = eligible_idx_by_id.get(id(match))
+        if eligible_idx is None:
+            continue
+        match.included_in_regression = eligible_idx in kept_index_set
+        if not match.included_in_regression and match.rejected_reason is None:
             match.rejected_reason = "residual_outlier"
+
+    anchor_idx_by_id = {id(match): idx for idx, match in enumerate(anchor_matches)}
+    kept_full_indices = np.array([
+        anchor_idx_by_id[id(eligible_matches[int(idx)])]
+        for idx in kept_indices
+    ], dtype=np.intp)
 
     unsupported_regions = _detect_anchor_gap_unsupported_regions(
         anchor_matches=anchor_matches,
-        kept_indices=kept_indices,
+        kept_indices=kept_full_indices,
         max_anchor_gap_seconds=None if config is None else config.max_anchor_gap_seconds,
     )
     diagnostics = _build_drift_fit_diagnostics(
         anchor_matches=anchor_matches,
-        kept_indices=kept_indices,
+        kept_indices=kept_full_indices,
         local_duration_seconds=local_duration_seconds,
         residual_rejection_threshold_ms=residual_rejection_threshold_ms,
         unsupported_regions=unsupported_regions,
+        eligible_match_count=len(eligible_matches),
     )
 
     return LinearDrift(
@@ -888,6 +1133,7 @@ def _build_drift_fit_diagnostics(
     local_duration_seconds: float | None,
     residual_rejection_threshold_ms: float | None,
     unsupported_regions: Sequence[dict[str, object]] = (),
+    eligible_match_count: int | None = None,
 ) -> DriftFitDiagnostics:
     kept_matches = [anchor_matches[int(idx)] for idx in kept_indices]
     span_start: float | None = None
@@ -903,7 +1149,8 @@ def _build_drift_fit_diagnostics(
         if local_duration_seconds is not None and local_duration_seconds > 0:
             span_ratio = span_seconds / local_duration_seconds
 
-    outlier_count = len(anchor_matches) - len(kept_matches)
+    eligible_count = eligible_match_count if eligible_match_count is not None else len(anchor_matches)
+    outlier_count = eligible_count - len(kept_matches)
     if outlier_count > 0:
         warnings.append(
             DriftFitWarning(
@@ -960,6 +1207,7 @@ def select_drift_model(
     anchor_matches: list[AnchorMatch],
     config: DriftModelConfig,
     local_duration_seconds: float | None = None,
+    matching_config: AnchorMatchingConfig | None = None,
 ) -> DriftModel | None:
     """Fit the configured drift model with conservative non-linear fallback.
 
@@ -969,7 +1217,7 @@ def select_drift_model(
     ``drift_model="kalman"`` requests with the same non-linear safety gate, so
     experimental behavior cannot run silently and ``auto`` never attempts Kalman.
     """
-    linear = fit_linear_drift_model(anchor_matches, local_duration_seconds=local_duration_seconds, config=config)
+    linear = fit_linear_drift_model(anchor_matches, local_duration_seconds=local_duration_seconds, config=config, matching_config=matching_config)
     if linear is None:
         return None
 
@@ -1093,17 +1341,9 @@ def select_drift_model(
             selected.model_selection_policy = "nonlinear_experimental"
         return selected
 
-    if config.max_breakpoints <= 0:
-        linear.model_selection_policy = "piecewise_experimental"
-        linear.selected_model_reason = "linear control model retained because max_breakpoints is 0"
-        linear.fallback_reason = "piecewise candidate skipped because max_breakpoints is 0"
-        linear.candidate_models = ("linear",)
-    else:
-        linear.model_selection_policy = "piecewise_experimental"
-        linear.fallback_reason = piecewise_fallback_reason
-        linear.selected_model_reason = "linear control model retained after piecewise evaluation"
-    return linear
-
+    selected.model_selection_policy = "nonlinear_experimental"
+    selected.selected_model_reason = "linear control model retained; no richer model applied"
+    return selected
 
 
 def fit_kalman_drift_model(

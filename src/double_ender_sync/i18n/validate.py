@@ -5,8 +5,8 @@ import sys
 from dataclasses import dataclass
 from importlib import resources
 
-from double_ender_sync.i18n.catalog import extract_placeholders
-from double_ender_sync.i18n.resolver import DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES
+from double_ender_sync.i18n.catalog import TranslationCatalog, extract_placeholders
+from double_ender_sync.i18n.resolver import DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, resolve_language
 
 REQUIRED_PREFIXES = ("gui.", "cli.", "api.", "errors.", "warnings.")
 PACKAGE = "double_ender_sync.i18n.locales"
@@ -69,17 +69,29 @@ def validate_locales(languages: list[str] | None = None) -> LocaleValidationResu
 
 
 def main() -> int:
+    def t(key: str, **kwargs: object) -> str:
+        if key == "cli.validate.failed_with_error":
+            exc = kwargs.get("exc")
+            return f"Validation failed with error: {exc}"
+        if key == "cli.validate.passed":
+            return "Validation passed"
+        if key == "cli.validate.failed":
+            return "Validation failed"
+        return key
+
     try:
+        catalog = TranslationCatalog(resolve_language())
+        t = catalog.t
         result = validate_locales()
     except Exception as exc:  # defensive guard to keep CLI reporting stable
-        print(f"Locale validation failed: {exc}", file=sys.stderr)
+        print(t("cli.validate.failed_with_error", exc=exc), file=sys.stderr)
         return 1
 
     if result.ok:
-        print("Locale validation passed.")
+        print(t("cli.validate.passed"))
         return 0
 
-    print("Locale validation failed:", file=sys.stderr)
+    print(t("cli.validate.failed"), file=sys.stderr)
     for error in result.errors:
         print(f"- {error}", file=sys.stderr)
     return 1

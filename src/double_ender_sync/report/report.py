@@ -208,7 +208,7 @@ def _build_track_alignment_report(track: AudioTrack, detail: dict, catalog: Tran
                     track.name,
                     "warning",
                     model_warning.get("code", "DRIFT_MODEL_WARNING"),
-                    model_warning.get("message", "Drift model diagnostics need manual inspection."),
+                    model_warning.get("message", catalog.t("warnings.drift_model_diagnostics_fallback")),
                     model_warning.get("time_seconds"),
                 )
             )
@@ -222,7 +222,7 @@ def _build_track_alignment_report(track: AudioTrack, detail: dict, catalog: Tran
                 track.name,
                 "warning",
                 drift_warning.get("code", "DRIFT_FIT_DIAGNOSTIC"),
-                drift_warning.get("message", "Drift fitting diagnostics need manual inspection."),
+                drift_warning.get("message", catalog.t("warnings.drift_fit_diagnostics_fallback")),
                 drift_warning.get("time_seconds"),
             )
         )
@@ -235,7 +235,7 @@ def _build_track_alignment_report(track: AudioTrack, detail: dict, catalog: Tran
                 track.name,
                 "warning",
                 coverage_warning.get("code", "ANCHOR_COVERAGE"),
-                coverage_warning.get("message", "Anchor coverage needs manual inspection."),
+                coverage_warning.get("message", catalog.t("warnings.anchor_coverage_fallback")),
                 coverage_warning.get("time_seconds"),
             )
         )
@@ -248,7 +248,7 @@ def _build_track_alignment_report(track: AudioTrack, detail: dict, catalog: Tran
     return data
 
 
-_DEFAULT_TRACK_DETAIL_KEYS = ("initial_offset", "global_correction", "vad", "anchor_selection", "drift_model_selection")
+_DEFAULT_TRACK_DETAIL_KEYS = ("initial_offset", "global_correction", "vad", "anchor_selection", "anchor_matching", "drift_model_selection")
 _VERBOSE_TRACK_DETAIL_KEYS = (
     "speech_segments",
     "anchor_candidates",
@@ -564,6 +564,19 @@ def serialize_anchor_matches(matches: list[AnchorMatch]) -> list[dict]:
             "residual_ms": m.residual_ms,
             "included_in_regression": m.included_in_regression,
             "rejected_reason": m.rejected_reason,
+            "ncc_best_score": m.ncc_best_score,
+            "ncc_second_score": m.ncc_second_score,
+            "ncc_margin": m.ncc_margin,
+            "ncc_prominence": m.ncc_prominence,
+            "ncc_width_seconds": m.ncc_width_seconds,
+            "ncc_plateau_size_seconds": m.ncc_plateau_size_seconds,
+            "ncc_peak_lag_seconds": m.ncc_peak_lag_seconds,
+            "gcc_phat_peak_lag_seconds": m.gcc_phat_peak_lag_seconds,
+            "gcc_phat_agreement_seconds": m.gcc_phat_agreement_seconds,
+            "match_quality": m.match_quality,
+            "match_uniqueness": m.match_uniqueness,
+            "match_sharpness": m.match_sharpness,
+            "match_agreement": m.match_agreement,
         }
         for m in matches
     ]

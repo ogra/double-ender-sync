@@ -8,8 +8,8 @@ from double_ender_sync.analysis.vad import MODERN_PYANNOTE_SEGMENTATION_MODEL
 
 
 def test_api_exposes_package_version() -> None:
-    assert get_version() == "0.2.4"
-    assert double_ender_sync.__version__ == "0.2.4"
+    assert get_version() == "0.2.5"
+    assert double_ender_sync.__version__ == "0.2.5"
 
 
 def test_build_cli_argv_includes_required_fields() -> None:
@@ -284,3 +284,83 @@ def test_build_cli_argv_includes_verbose_report_flag() -> None:
     argv = build_cli_argv(options)
 
     assert "--verbose-report" in argv
+
+
+def test_build_cli_argv_includes_anchor_matching_options() -> None:
+    from double_ender_sync.config import AnchorMatchingConfig
+
+    custom_matching = AnchorMatchingConfig(
+        nms_exclusion_seconds=0.08,
+        ncc_min_score=0.55,
+        ncc_min_margin=0.12,
+        ncc_min_prominence=0.08,
+        ncc_good_width_seconds=0.003,
+        ncc_bad_width_seconds=0.07,
+        ncc_margin_low=0.04,
+        ncc_margin_high=0.25,
+        ncc_prominence_low=0.02,
+        ncc_prominence_high=0.18,
+        gcc_phat_enabled=True,
+        gcc_phat_only_when_ambiguous=True,
+        gcc_phat_agreement_tolerance_seconds=0.04,
+        min_confidence_for_fit=0.06,
+    )
+
+    options = AlignmentOptions(
+        master=Path("input/master.wav"),
+        tracks=[Path("input/speaker-a.wav")],
+        out=Path("output"),
+        anchor_matching=custom_matching,
+    )
+    argv = build_cli_argv(options)
+
+    assert "--nms-exclusion-seconds" in argv
+    assert "0.08" in argv
+    assert "--ncc-min-score" in argv
+    assert "0.55" in argv
+    assert "--ncc-min-margin" in argv
+    assert "0.12" in argv
+    assert "--ncc-min-prominence" in argv
+    assert "0.08" in argv
+    assert "--ncc-good-width-seconds" in argv
+    assert "0.003" in argv
+    assert "--ncc-bad-width-seconds" in argv
+    assert "0.07" in argv
+    assert "--ncc-margin-low" in argv
+    assert "0.04" in argv
+    assert "--ncc-margin-high" in argv
+    assert "0.25" in argv
+    assert "--ncc-prominence-low" in argv
+    assert "0.02" in argv
+    assert "--ncc-prominence-high" in argv
+    assert "0.18" in argv
+    assert "--gcc-phat-agreement-tolerance-seconds" in argv
+    assert "0.04" in argv
+    assert "--min-confidence-for-fit" in argv
+    assert "0.06" in argv
+    assert "--gcc-phat-enabled" in argv
+    assert "--no-gcc-phat" not in argv
+    assert "--gcc-phat-only-when-ambiguous" in argv
+    assert "--no-gcc-phat-ambiguous-only" not in argv
+
+
+def test_build_cli_argv_includes_anchor_matching_no_gcc_phat() -> None:
+    from double_ender_sync.config import AnchorMatchingConfig
+
+    custom_matching = AnchorMatchingConfig(
+        gcc_phat_enabled=False,
+        gcc_phat_only_when_ambiguous=False,
+    )
+
+    options = AlignmentOptions(
+        master=Path("input/master.wav"),
+        tracks=[Path("input/speaker-a.wav")],
+        out=Path("output"),
+        anchor_matching=custom_matching,
+    )
+    argv = build_cli_argv(options)
+
+    assert "--no-gcc-phat" in argv
+    assert "--gcc-phat-enabled" not in argv
+    assert "--no-gcc-phat-ambiguous-only" in argv
+    assert "--gcc-phat-only-when-ambiguous" not in argv

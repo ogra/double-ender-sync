@@ -93,3 +93,121 @@ def test_validate_locales_reports_load_error(monkeypatch) -> None:
     result = validate_locales(["en", "ja"])
     assert not result.ok
     assert any("ja: failed to load locale file" in err for err in result.errors)
+
+
+NEW_CLI_ERROR_KEYS = [
+    "cli.error.analysis_sample_rate_positive",
+    "cli.error.stretch_threshold_non_negative",
+    "cli.error.invalid_anchor_selection",
+    "cli.error.invalid_drift_model",
+    "cli.error.invalid_anchor_matching",
+    "cli.error.pyannote_model_invalid",
+    "cli.error.audio_load_failed",
+    "cli.error.stretch_no_tty",
+    "cli.error.aborted_by_user",
+    "cli.error.gui_dependencies_missing",
+]
+
+NEW_CLI_WARN_KEYS = [
+    "cli.warn.stretch_ratio",
+]
+
+NEW_CLI_PROMPT_KEYS = [
+    "cli.prompt.continue_alignment",
+]
+
+NEW_CLI_OUTPUT_KEYS = [
+    "cli.output.wrote",
+    "cli.output.reports_generated",
+]
+
+NEW_CLI_VALIDATE_KEYS = [
+    "cli.validate.passed",
+    "cli.validate.failed",
+    "cli.validate.failed_with_error",
+]
+
+NEW_WARNINGS_KEYS = [
+    "warnings.drift_model_diagnostics_fallback",
+    "warnings.drift_fit_diagnostics_fallback",
+    "warnings.anchor_coverage_fallback",
+]
+
+NEW_GUI_KEYS = [
+    "gui.progress_done_percent",
+]
+
+
+def test_new_i18n_messages_exist_in_en() -> None:
+    catalog = TranslationCatalog("en")
+    all_keys = (
+        NEW_CLI_ERROR_KEYS
+        + NEW_CLI_WARN_KEYS
+        + NEW_CLI_PROMPT_KEYS
+        + NEW_CLI_OUTPUT_KEYS
+        + NEW_CLI_VALIDATE_KEYS
+        + NEW_WARNINGS_KEYS
+        + NEW_GUI_KEYS
+    )
+    for key in all_keys:
+        result = catalog.t(key)
+        assert result != key, f"Key '{key}' should have a translation in en.json, got raw key"
+
+
+def test_new_i18n_messages_exist_in_ja() -> None:
+    catalog = TranslationCatalog("ja")
+    all_keys = (
+        NEW_CLI_ERROR_KEYS
+        + NEW_CLI_WARN_KEYS
+        + NEW_CLI_PROMPT_KEYS
+        + NEW_CLI_OUTPUT_KEYS
+        + NEW_CLI_VALIDATE_KEYS
+        + NEW_WARNINGS_KEYS
+        + NEW_GUI_KEYS
+    )
+    for key in all_keys:
+        result = catalog.t(key)
+        assert result != key, f"Key '{key}' should have a translation in ja.json, got raw key"
+
+
+def test_cli_error_messages_format_params() -> None:
+    catalog = TranslationCatalog("en")
+    assert "error: invalid anchor" in catalog.t("cli.error.invalid_anchor_selection", exc="test error")
+    assert "error: test error" == catalog.t("cli.error.audio_load_failed", exc="test error")
+
+
+def test_cli_warn_stretch_ratio_format() -> None:
+    catalog = TranslationCatalog("en")
+    result = catalog.t(
+        "cli.warn.stretch_ratio",
+        name="speaker-a",
+        stretch_ratio="1.000000",
+        delta="0.000000",
+        threshold="0.003000",
+    )
+    assert "speaker-a" in result
+    assert "1.000000" in result
+
+
+def test_cli_output_wrote_format() -> None:
+    catalog = TranslationCatalog("en")
+    result = catalog.t("cli.output.wrote", path="/tmp/test.wav")
+    assert "/tmp/test.wav" in result
+
+
+def test_cli_validate_failed_with_error_format() -> None:
+    catalog = TranslationCatalog("en")
+    result = catalog.t("cli.validate.failed_with_error", exc="test")
+    assert "test" in result
+
+
+def test_warnings_fallback_messages_not_raw_keys() -> None:
+    catalog = TranslationCatalog("en")
+    assert catalog.t("warnings.drift_model_diagnostics_fallback") != "warnings.drift_model_diagnostics_fallback"
+    assert catalog.t("warnings.drift_fit_diagnostics_fallback") != "warnings.drift_fit_diagnostics_fallback"
+    assert catalog.t("warnings.anchor_coverage_fallback") != "warnings.anchor_coverage_fallback"
+
+
+def test_gui_progress_done_percent_equals_value() -> None:
+    catalog = TranslationCatalog("en")
+    assert catalog.t("gui.progress_done_percent") == "100.0%"

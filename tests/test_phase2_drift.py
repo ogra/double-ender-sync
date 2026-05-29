@@ -24,11 +24,15 @@ from tests.helpers.synthetic_drift import (
     sparse_anchor_set,
 )
 from double_ender_sync.analysis.vad import detect_speech_segments
-from double_ender_sync.config import DriftModelConfig
+from double_ender_sync.config import AnchorMatchingConfig, DriftModelConfig
 
 
 def test_fit_linear_drift_model_estimates_stretch_ratio() -> None:
     audio_pair = offset_audio_pair()
+    permissive_matching = AnchorMatchingConfig(
+        ncc_min_score=0.0, ncc_min_margin=0.0, ncc_min_prominence=0.0,
+        min_confidence_for_fit=0.0,
+    )
 
     speech_segments = detect_speech_segments(
         audio_pair.local, sample_rate=audio_pair.sample_rate, frame_ms=40.0
@@ -52,8 +56,9 @@ def test_fit_linear_drift_model_estimates_stretch_ratio() -> None:
         anchors,
         initial.offset_seconds,
         search_radius_seconds=1.0,
+        matching_config=permissive_matching,
     )
-    drift = fit_linear_drift_model(matches)
+    drift = fit_linear_drift_model(matches, matching_config=permissive_matching)
 
     assert drift is not None
     assert drift.anchor_count >= 2

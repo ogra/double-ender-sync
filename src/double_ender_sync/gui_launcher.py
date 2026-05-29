@@ -3,11 +3,16 @@ from __future__ import annotations
 import importlib.util
 import sys
 
+from double_ender_sync.i18n.catalog import TranslationCatalog
+from double_ender_sync.i18n.resolver import resolve_language
+
 
 def main() -> int:
     if importlib.util.find_spec("PySide6") is None:
+        lang = resolve_language()
+        catalog = TranslationCatalog(lang)
         print(
-            'error: GUI dependencies are not installed. Install with: pip install "double-ender-sync[gui]"',
+            catalog.t("cli.error.gui_dependencies_missing"),
             file=sys.stderr,
         )
         return 1

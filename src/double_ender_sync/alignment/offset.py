@@ -4,7 +4,12 @@ import logging
 import numpy as np
 
 from double_ender_sync.analysis.anchors import AnchorCandidate
-from double_ender_sync.analysis.features import extract_anchor_feature, normalized_correlation_scores
+from double_ender_sync.analysis.features import (
+    clamp01,
+    extract_anchor_feature,
+    ncc_peak_diagnostics,
+    normalized_correlation_scores,
+)
 
 
 LOGGER = logging.getLogger("double_ender_sync")
@@ -49,15 +54,27 @@ def estimate_initial_offset(
 
         scores = normalized_correlation_scores(master_samples, feature)
 
-        best_score = float(np.max(scores))
-        # Periodic signals can produce many nearly-identical maxima.
-        # Prefer the earliest plausible peak to reduce forward drift bias.
-        peak_tolerance = 1e-4
-        near_peaks = np.flatnonzero(scores >= (best_score - peak_tolerance))
-        best_index = int(near_peaks[0]) if near_peaks.size > 0 else int(np.argmax(scores))
+        diagnostics = ncc_peak_diagnostics(
+            scores,
+            sample_rate=sample_rate,
+            nms_exclusion_seconds=0.05,
+        )
+
+        if diagnostics is None:
+            continue
+
+        best_score = diagnostics.best_score
+
+        if best_score < 0.10:
+            continue
+
+        best_index = diagnostics.best_lag_samples
+        earliest_idx = _earliest_near_tie(scores, best_score, best_index)
+        best_index = earliest_idx
+
         master_anchor_start = best_index / sample_rate
         offset_seconds = master_anchor_start - anchor.local_start
-        confidence = max(0.0, min(1.0, (best_score + 1.0) / 2.0 * anchor.confidence))
+        confidence = max(0.0, min(1.0, clamp01((best_score + 1.0) / 2.0) * anchor.confidence))
 
         candidate = OffsetEstimate(
             offset_seconds=offset_seconds,
@@ -66,7 +83,7 @@ def estimate_initial_offset(
             master_anchor_start=master_anchor_start,
             score=best_score,
         )
-        if best is None or candidate.score > best.score:
+        if best is None or candidate.score > best.score + 1e-4:
             best = candidate
 
         LOGGER.debug(
@@ -78,3 +95,12 @@ def estimate_initial_offset(
         )
 
     return best
+
+
+def _earliest_near_tie(scores: np.ndarray, best_score: float, best_index: int, tolerance: float = 1e-4) -> int:
+    """Return the earliest lag whose score is within *tolerance* of *best_score*."""
+    near_tie_mask = scores >= (best_score - tolerance)
+    near_tie_indices = np.where(near_tie_mask)[0]
+    if near_tie_indices.size == 0:
+        return best_index
+    return int(near_tie_indices[0])

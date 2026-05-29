@@ -7,7 +7,7 @@ from typing import Literal, Sequence
 from double_ender_sync import cli
 from double_ender_sync._version import get_version as _get_version
 from double_ender_sync.analysis.vad import DEFAULT_PYANNOTE_MODEL
-from double_ender_sync.config import DEFAULT_ANCHOR_SELECTION_CONFIG, DEFAULT_DRIFT_MODEL_CONFIG, AnchorSelectionConfig, DriftModelConfig, DriftModelName, SplineKnotSource
+from double_ender_sync.config import DEFAULT_ANCHOR_MATCHING_CONFIG, DEFAULT_ANCHOR_SELECTION_CONFIG, DEFAULT_DRIFT_MODEL_CONFIG, AnchorMatchingConfig, AnchorSelectionConfig, DriftModelConfig, DriftModelName, SplineKnotSource
 
 
 def get_version() -> str:
@@ -60,6 +60,7 @@ class AlignmentOptions:
     vad_strategy: Literal["adaptive_rms", "rms", "silero", "webrtc", "pyannote"] = "adaptive_rms"
     pyannote_model: str = DEFAULT_PYANNOTE_MODEL
     anchor_selection: AnchorSelectionConfig = field(default_factory=lambda: DEFAULT_ANCHOR_SELECTION_CONFIG)
+    anchor_matching: AnchorMatchingConfig = field(default_factory=lambda: DEFAULT_ANCHOR_MATCHING_CONFIG)
     lang: str | None = None
     verbose_report: bool = False
 
@@ -187,6 +188,30 @@ def build_cli_argv(options: AlignmentOptions) -> list[str]:
         argv.extend(["--min-snr-db", str(options.anchor_selection.min_snr_db)])
     if options.anchor_selection.spectral_flatness_threshold is not None:
         argv.extend(["--spectral-flatness-threshold", str(options.anchor_selection.spectral_flatness_threshold)])
+
+    am = options.anchor_matching
+    argv.extend([
+        "--nms-exclusion-seconds", str(am.nms_exclusion_seconds),
+        "--ncc-min-score", str(am.ncc_min_score),
+        "--ncc-min-margin", str(am.ncc_min_margin),
+        "--ncc-min-prominence", str(am.ncc_min_prominence),
+        "--ncc-good-width-seconds", str(am.ncc_good_width_seconds),
+        "--ncc-bad-width-seconds", str(am.ncc_bad_width_seconds),
+        "--ncc-margin-low", str(am.ncc_margin_low),
+        "--ncc-margin-high", str(am.ncc_margin_high),
+        "--ncc-prominence-low", str(am.ncc_prominence_low),
+        "--ncc-prominence-high", str(am.ncc_prominence_high),
+        "--gcc-phat-agreement-tolerance-seconds", str(am.gcc_phat_agreement_tolerance_seconds),
+        "--min-confidence-for-fit", str(am.min_confidence_for_fit),
+    ])
+    if am.gcc_phat_enabled:
+        argv.append("--gcc-phat-enabled")
+    else:
+        argv.append("--no-gcc-phat")
+    if am.gcc_phat_only_when_ambiguous:
+        argv.append("--gcc-phat-only-when-ambiguous")
+    else:
+        argv.append("--no-gcc-phat-ambiguous-only")
 
     if options.vad_strategy == "pyannote":
         argv.extend(["--pyannote-model", options.pyannote_model])

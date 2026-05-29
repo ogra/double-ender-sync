@@ -155,10 +155,10 @@ Print the installed version from the CLI with either long or short version flags
 ```bash
 double-ender-sync --version
 double-ender-sync -V
-# version 0.2.4
+# version 0.2.5
 ```
 
-The same version is exposed to Python callers through the package/API (`double_ender_sync.__version__` and `double_ender_sync.api.get_version()` both return `0.2.4`) and is shown in the GUI footer as `v0.2.4`.
+The same version is exposed to Python callers through the package/API (`double_ender_sync.__version__` and `double_ender_sync.api.get_version()` both return `0.2.5`) and is shown in the GUI footer as `v0.2.5`.
 
 ## Quick start
 
@@ -227,6 +227,28 @@ by `analysis`, `master`, `tracks`, `warnings`, and `errors` sections.
   Configure the minimum target budget for short recordings and the safety cap for selected anchor candidates. Use `none` for `--max-anchor-count` only for debugging/unbounded experiments.
 - `--stratified-bin-count <count>` / `--anchors-per-bin <count>`
   Override the automatic timeline stratification used for drift-anchor selection. By default, the selector derives roughly one-minute bins bounded by the target anchor budget, picks top candidates per bin first, then fills the remaining budget globally; sparse coverage and long unanchored spans are reported as warnings rather than hidden.
+- `--nms-exclusion-seconds <seconds>` (default: `0.05`)
+  Non-maximum suppression exclusion radius for NCC peak search. Prevents reporting a secondary peak too close to the best peak.
+- `--ncc-min-score <score>` (default: `0.45`)
+  Hard gate: minimum NCC best-peak score to accept a match. Matches scoring below this threshold are rejected with reason `ncc_best_score_below_min`.
+- `--ncc-min-margin <margin>` (default: `0.10`)
+  Hard gate: minimum NCC margin (difference between best and second-best independent peak) to accept a match. Matches with ambiguous/multiple peaks below this margin are rejected to prevent repeated phrases from driving the drift fit. This gate is strictly enforced; high prominence no longer bypasses it.
+- `--ncc-min-prominence <prominence>` (default: `0.06`)
+  Hard gate: minimum NCC peak prominence (height relative to surrounding baseline) to accept a match.
+- `--ncc-good-width-seconds <seconds>` (default: `0.005`) / `--ncc-bad-width-seconds <seconds>` (default: `0.050`)
+  NCC peak width thresholds for continuous sharpness scoring. Widths below the good threshold yield maximum sharpness; widths above the bad threshold yield minimum sharpness. Non-finite values (`inf`) are rejected by validation.
+- `--ncc-margin-low <low>` / `--ncc-margin-high <high>` (defaults: `0.05` / `0.20`)
+  Normalization bounds for continuous uniqueness scoring from NCC margin. Margins below `low` map to minimum uniqueness; margins above `high` map to maximum. `--ncc-margin-high` must be finite.
+- `--ncc-prominence-low <low>` / `--ncc-prominence-high <high>` (defaults: `0.03` / `0.15`)
+  Normalization bounds for the prominence-based component of continuous uniqueness scoring. `--ncc-prominence-high` must be finite.
+- `--gcc-phat-enabled` / `--no-gcc-phat` (default: enabled)
+  Toggle GCC-PHAT (phase-transform) cross-check scoring. When enabled, GCC-PHAT is computed alongside NCC to produce a cross-method agreement score. When disabled, the agreement component defaults to 1.0.
+- `--gcc-phat-only-when-ambiguous` / `--no-gcc-phat-ambiguous-only` (default: enabled)
+  When enabled, GCC-PHAT is computed only for matches where NCC is ambiguous (low margin, low prominence, or rejected by a hard gate). When disabled, GCC-PHAT runs for all matches. Running GCC-PHAT only for ambiguous matches reduces computation while still catching ambiguous repeated-phrase false positives.
+- `--gcc-phat-agreement-tolerance-seconds <seconds>` (default: `0.030`)
+  Maximum allowed lag disagreement between NCC best peak and GCC-PHAT best peak before the agreement score degrades linearly to zero.
+- `--min-confidence-for-fit <confidence>` (default: `0.05`)
+  Minimum composite anchor confidence (product of quality, uniqueness, sharpness, agreement, and anchor-level confidence) required for a match to be included in drift model fitting. Matches below this threshold are annotated with `excluded_by_min_confidence` and omitted from regression.
 - `--drift-model {auto,linear,piecewise_linear,spline,kalman}`
   Select the drift model policy. The default `auto` keeps `LinearDrift` as the compatibility/control model while `--allow-nonlinear-drift` is disabled. `linear` always requests the linear control model. `piecewise_linear` and `spline` are experimental and require `--allow-nonlinear-drift`; `kalman` is research/experimental and is evaluated only when explicitly requested with `--allow-nonlinear-drift`. Piecewise fitting uses continuous segments, spline fitting uses monotonic cubic PCHIP interpolation through validated support knots, and Kalman fitting models offset/rate as noisy latent states smoothed across anchors. These richer models are accepted only when anchor coverage, residual improvement, monotonicity, and local-rate plausibility checks pass. Reports preserve legacy `offset_seconds` / `stretch_ratio` fields and add `model_type`, `model_version`, `model_selection_policy`, `model_parameters`, `breakpoints`, `segments`, `segment_residual_summaries`, `knots`, `knot_residual_summaries` with per-knot anchor counts and residual statistics, `fallback_reason`, `local_rate_summary`, and Kalman-specific `uncertainty_summary`, `covariance_summary`, `uncertainty_bands`, `state_points`, and `anchor_residuals_ms` diagnostics. The renderer API supports strictly monotonic, invertible `DriftModel` mappings; regions outside model support and detected internal master-time gaps are padded with silence and exposed in `global_correction.unsupported_regions`.
 - `--allow-nonlinear-drift`
@@ -264,6 +286,54 @@ by `analysis`, `master`, `tracks`, `warnings`, and `errors` sections.
   Write logs to a specific file path (default: `output/double-ender-sync.log`).
 
 Use `double-ender-sync --help` for the full option list.
+
+### Anchor matching algorithm
+
+The anchor matching pipeline computes NCC (Normalized Cross-Correlation) for each anchor feature against its search window in the master track, then evaluates a continuous confidence score with four multiplicative components:
+
+**1. Quality** (NCC best score): Linearly normalized from `ncc_min_score` to 1.0 (i.e., `quality = clamp01((best_score - ncc_min_score) / (1 - ncc_min_score))`). Scores below the minimum are rejected by the hard gate.
+
+**2. Uniqueness** (margin + prominence): Composite score from two independent NCC peak properties:
+
+- NCC margin (difference between best and second-best independent peak): normalized between `ncc_margin_low` and `ncc_margin_high`. Low margin indicates ambiguous matches from repeated phrases or similar content.
+- NCC prominence (height of best peak relative to surrounding baseline): normalized between `ncc_prominence_low` and `ncc_prominence_high`. Low prominence suggests the peak barely stands out from the correlation surface.
+- The composite is the **minimum** of the normalized margin and prominence scores, so low margin or low prominence limits uniqueness.
+
+**3. Sharpness** (NCC peak width): Measures how concentrated the best peak is. Narrow peaks (few samples wide, approaching `ncc_good_width_seconds`) yield sharpness near 1.0. Broad, flat peaks (approaching `ncc_bad_width_seconds`) yield sharpness near 0.0, suggesting the anchor feature is too spectrally simple or the surrounding master content is too similar.
+
+**4. Agreement** (GCC-PHAT cross-check, optional): When enabled, GCC-PHAT (Generalized Cross-Correlation with Phase Transform) provides a whitened alternative to NCC. The lag difference between NCC best peak and GCC-PHAT best peak is normalized against `gcc_phat_agreement_tolerance_seconds` to produce an agreement score between 0.0 and 1.0. When GCC-PHAT is disabled (or not run due to ambiguity-only mode), agreement defaults to 1.0; when GCC-PHAT runs but no reliable peak is found, agreement is set to 0.0.
+
+The final confidence is the product of quality, uniqueness, sharpness, agreement, and the anchor's own confidence:
+
+```
+confidence = anchor_confidence * quality * uniqueness * sharpness * agreement
+```
+
+**Hard gates** enforce minimum thresholds for score, margin, and prominence for a match to be accepted. Component scores are still computed for diagnostics/reporting, but matches failing any hard gate are rejected with a diagnostic `rejected_reason`. The margin gate is strictly enforced — there is no prominence bypass for low-margin matches.
+
+**GCC-PHAT ambiguity triggering**: When `--gcc-phat-only-when-ambiguous` is enabled (default), GCC-PHAT is computed only for matches where NCC is ambiguous: hard-gate failure, margin below `2 * ncc_min_margin` with prominence below `5 * ncc_min_prominence`, or prominence below `2 * ncc_min_prominence`. This reduces computation while still cross-checking matches that NCC alone may not disambiguate reliably.
+
+### Enriched sync-report.json
+
+Anchor matches in `sync-report.json` now carry 13 additional diagnostic fields per match:
+
+| Field                        | Type          | Description                                                                   |
+| ---------------------------- | ------------- | ----------------------------------------------------------------------------- |
+| `ncc_best_score`             | float         | NCC score of the best peak                                                    |
+| `ncc_second_score`           | float or null | NCC score of the second-best independent peak                                 |
+| `ncc_margin`                 | float or null | Difference between best and second score (null if no independent second peak) |
+| `ncc_prominence`             | float         | Prominence of the best peak relative to the NCC surface baseline              |
+| `ncc_width_seconds`          | float         | Width of the best NCC peak at half prominence, in seconds                     |
+| `ncc_plateau_size_seconds`   | float         | Width of the NCC peak's flat top region, in seconds                           |
+| `ncc_peak_lag_seconds`       | float         | Lag position of the best NCC peak, in seconds                                 |
+| `gcc_phat_peak_lag_seconds`  | float or null | Lag position of the best GCC-PHAT peak (null if GCC-PHAT not run)             |
+| `gcc_phat_agreement_seconds` | float or null | Absolute lag disagreement between NCC and GCC-PHAT peaks                      |
+| `match_quality`              | float         | Continuous quality score (0.0–1.0)                                            |
+| `match_uniqueness`           | float         | Continuous uniqueness score (0.0–1.0) from margin and prominence              |
+| `match_sharpness`            | float         | Continuous sharpness score (0.0–1.0) from NCC peak width                      |
+| `match_agreement`            | float         | Continuous GCC-PHAT agreement score (0.0–1.0, defaults to 1.0)                |
+
+The report also includes a per-track `anchor_matching` section with the full `AnchorMatchingConfig` used for the run (all NCC thresholds, GCC-PHAT settings, NMS exclusion, and min-confidence-for-fit), and verbose reports include `analysis.configuration_snapshot.anchor_matching` for top-level inspection. Default reports include the `anchor_matching` config in the per-track detail.
 
 For long recordings, see [Runtime tuning guide for long recordings](docs/runtime-tuning.md) for a report-driven process to reduce processing time while preserving alignment confidence.
 
@@ -329,6 +399,7 @@ GUI features (current):
 - Drag and drop multiple speaker `.wav` tracks
 - Choose output directory
 - Run the same alignment pipeline as CLI
+- Advanced settings open in a dedicated modal dialog via the **Advanced settings…** button, keeping the main window compact. The dialog groups options into tabs (Basic / Output, VAD, Drift model, Anchor selection, Anchor matching), exposing the same shared anchor-selection and anchor-matching configuration as CLI/API. Defaults match the shared config, so leaving the tabs untouched preserves prior behavior.
 
 ## Runtime troubleshooting (pyannote + FFmpeg)
 
@@ -388,7 +459,7 @@ In addition to CLI usage, you can run the same pipeline from Python.
 ```python
 from pathlib import Path
 
-from double_ender_sync import AlignmentOptions, AnchorSelectionConfig, run_alignment
+from double_ender_sync import AlignmentOptions, AnchorSelectionConfig, AnchorMatchingConfig, run_alignment
 
 options = AlignmentOptions(
     master=Path("input/master.wav"),
@@ -398,6 +469,11 @@ options = AlignmentOptions(
     local_adjust_enabled=False,
     normalize_output=False,
     anchor_selection=AnchorSelectionConfig(anchor_density_per_minute=1.0, max_anchor_count=120),
+    anchor_matching=AnchorMatchingConfig(
+        ncc_min_score=0.45,
+        ncc_min_margin=0.10,
+        gcc_phat_enabled=True,
+    ),
     drift_model="auto",
     allow_nonlinear_drift=False,
     max_breakpoints=1,
@@ -416,6 +492,9 @@ if exit_code != 0:
 ## Translation operations rules
 
 - Translation keys are domain-prefixed and stable (`gui.*`, `cli.*`, `api.*`, `errors.*`, `warnings.*`).
+- All CLI error, warning, prompt, and completion messages are localized via `cli.*` keys.
+- Report warning/error fallback prose is localized via `warnings.*` keys.
+- Locale validation is available via `double-ender-sync-validate-locales` (or `python -m double_ender_sync.i18n.validate`), with messages themselves localized.
 - Never use display text itself as a key.
 - Missing key behavior is unified:
   - If the target locale does not have the key, fallback to `en`.
@@ -471,11 +550,13 @@ Implemented pipeline includes:
 
 1. audio loading and normalization for analysis,
 2. speech-region detection (strategy-based: adaptive RMS by default fallback, with ML-ready hooks),
-3. anchor selection and matching against master,
-4. initial offset estimation,
-5. multi-anchor linear drift estimation,
-6. global correction and synced WAV export,
-7. detailed reporting with warnings/errors.
+3. anchor selection and matching against master with NCC peak diagnostics and continuous confidence scoring,
+4. GCC-PHAT cross-check scoring for ambiguous NCC matches,
+5. initial offset estimation with boundary peak handling,
+6. multi-anchor linear drift estimation with strict NCC margin gate and fit-produced confidence filtering,
+7. global correction and synced WAV export,
+8. detailed reporting with warnings/errors and enriched per-match NCC/GCC-PHAT diagnostics,
+9. localized CLI, GUI, and report messages (English / Japanese) keyed by `--lang`.
 
 ## Scope and non-goals
 

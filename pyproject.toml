@@ -1,6 +1,6 @@
 [project]
 name = "double-ender-sync"
-version = "0.2.4"
+version = "0.2.5"
 description = "Double-ender time alignment engine for podcast production"
 readme = "README.md"
 requires-python = ">=3.11"

@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.5] - 2026-05-29
+
+### Changed
+
+- Improved anchor matching algorithm (NCC and GCC-PHAT, configurable via CLI and GUI)
+- Revamped GUI design (advanced settings in modal dialog)
+- Enriched `sync-report.json`
+
 ## [0.2.4] - 2026-05-17
 
 ### Added

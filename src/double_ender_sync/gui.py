@@ -10,9 +10,10 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QDoubleSpinBox,
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QProgressBar,
     QSpinBox,
+    QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -34,11 +36,28 @@ from double_ender_sync._version import get_gui_version_text
 from double_ender_sync.api import AlignmentOptions, build_cli_argv, run_alignment
 from double_ender_sync.analysis.vad import DEFAULT_PYANNOTE_MODEL
 from double_ender_sync.cli import EXIT_STRETCH_CONFIRMATION_REQUIRED
-from double_ender_sync.config import DEFAULT_DRIFT_MODEL_CONFIG
+from double_ender_sync.config import (
+    DEFAULT_ANCHOR_MATCHING_CONFIG,
+    DEFAULT_ANCHOR_SELECTION_CONFIG,
+    DEFAULT_DRIFT_MODEL_CONFIG,
+    AnchorMatchingConfig,
+    AnchorSelectionConfig,
+)
 from double_ender_sync.i18n import TranslationCatalog, resolve_language
 from double_ender_sync.i18n.resolver import extract_explicit_lang
 
 _PITCH_PRESERVING_STRETCH_METHODS: frozenset[str] = frozenset({"pitch_preserving", "rubberband", "audiostretchy"})
+
+# Sentinel spin-box values used to represent "None" for nullable options.
+# Each sits at the widget's minimum so Qt renders the special-value text.
+_MAX_ANCHOR_COUNT_UNLIMITED = 0
+_STRATIFIED_BIN_COUNT_AUTO = 0
+_ANCHORS_PER_BIN_AUTO = 0
+_MIN_SNR_DB_DISABLED = -200.0
+_SPECTRAL_FLATNESS_DISABLED = 0.0
+# Largest signed integer accepted by QSpinBox; used where the shared config
+# applies minimum-only validation (mirrors the existing drift spin boxes).
+_SHARED_NON_NEGATIVE_SPINBOX_MAX = 2_147_483_647
 
 
 class DropListWidget(QListWidget):
@@ -213,6 +232,10 @@ class MainWindow(QMainWindow):
 
         self.pyannote_model_input = QLineEdit(DEFAULT_PYANNOTE_MODEL)
         self.pyannote_model_input.setPlaceholderText(DEFAULT_PYANNOTE_MODEL)
+
+        self._build_anchor_selection_inputs()
+        self._build_anchor_matching_inputs()
+
         self.vad_strategy_input.currentIndexChanged.connect(self._sync_pyannote_model_input_enabled)
         self.drift_model_input.currentIndexChanged.connect(self._sync_drift_model_gate)
         self.allow_nonlinear_drift_checkbox.toggled.connect(self._sync_drift_model_gate)
@@ -223,41 +246,105 @@ class MainWindow(QMainWindow):
         self._sync_drift_model_gate()
         self._sync_piecewise_anchor_minimum()
         self._sync_checkbox_from_combo()
+        self._sync_anchor_density_bounds()
+        self._sync_anchor_durations()
+        self._sync_max_anchor_count_minimum()
+        self._sync_ncc_margin_range()
+        self._sync_ncc_prominence_range()
+        self._sync_ncc_width_range()
+        self._sync_gcc_phat_gate()
 
         layout.addLayout(form_layout)
 
-        advanced_panel = QWidget()
-        advanced_layout = QFormLayout(advanced_panel)
-        advanced_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        advanced_layout.setLabelAlignment(Qt.AlignLeft | Qt.AlignTop)
-        advanced_layout.setHorizontalSpacing(16)
-        advanced_layout.setVerticalSpacing(10)
-        advanced_layout.addRow(QLabel(self.t("gui.analysis_sample_rate")), self.sample_rate_input)
-        advanced_layout.addRow(self.normalize_checkbox)
-        advanced_layout.addRow(self.local_adjust_checkbox)
-        advanced_layout.addRow(self.pitch_preserving_checkbox)
-        advanced_layout.addRow(QLabel(self.t("gui.stretch_method")), self.stretch_method_combo)
-        advanced_layout.addRow(QLabel(self.t("gui.stretch_threshold")), self.stretch_threshold_input)
-        advanced_layout.addRow(QLabel(self.t("gui.vad_strategy")), self.vad_strategy_input)
-        advanced_layout.addRow(QLabel(self.t("gui.pyannote_model")), self.pyannote_model_input)
-        advanced_layout.addRow(QLabel(self.t("gui.drift_model")), self.drift_model_input)
-        advanced_layout.addRow(self.allow_nonlinear_drift_checkbox)
-        advanced_layout.addRow(QLabel(self.t("gui.max_breakpoints")), self.max_breakpoints_input)
-        advanced_layout.addRow(QLabel(self.t("gui.min_anchors_for_piecewise")), self.min_anchors_for_piecewise_input)
-        advanced_layout.addRow(QLabel(self.t("gui.min_anchors_per_segment")), self.min_anchors_per_segment_input)
-        advanced_layout.addRow(QLabel(self.t("gui.max_anchor_gap_seconds")), self.max_anchor_gap_input)
-        advanced_layout.addRow(self.verbose_report_checkbox)
+        self.advanced_tabs = QTabWidget()
 
-        advanced_box = QGroupBox(self.t("gui.advanced_settings"))
-        self.advanced_box = advanced_box
-        advanced_box.setCheckable(True)
-        advanced_box.setChecked(False)
-        advanced_box_layout = QVBoxLayout(advanced_box)
-        advanced_box_layout.setContentsMargins(8, 8, 8, 8)
-        advanced_box_layout.addWidget(advanced_panel)
-        advanced_box.toggled.connect(advanced_panel.setVisible)
-        advanced_panel.setVisible(False)
-        layout.addWidget(advanced_box)
+        basic_tab, basic_form = self._new_form_tab()
+        self._add_form_rows(
+            basic_form,
+            [
+                ("gui.analysis_sample_rate", self.sample_rate_input),
+                (None, self.normalize_checkbox),
+                (None, self.local_adjust_checkbox),
+                (None, self.pitch_preserving_checkbox),
+                ("gui.stretch_method", self.stretch_method_combo),
+                ("gui.stretch_threshold", self.stretch_threshold_input),
+                (None, self.verbose_report_checkbox),
+            ],
+        )
+        self.advanced_tabs.addTab(basic_tab, self.t("gui.tab.basic"))
+
+        vad_tab, vad_form = self._new_form_tab()
+        self._add_form_rows(
+            vad_form,
+            [
+                ("gui.vad_strategy", self.vad_strategy_input),
+                ("gui.pyannote_model", self.pyannote_model_input),
+            ],
+        )
+        self.advanced_tabs.addTab(vad_tab, self.t("gui.tab.vad"))
+
+        drift_tab, drift_form = self._new_form_tab()
+        self._add_form_rows(
+            drift_form,
+            [
+                ("gui.drift_model", self.drift_model_input),
+                (None, self.allow_nonlinear_drift_checkbox),
+                ("gui.max_breakpoints", self.max_breakpoints_input),
+                ("gui.min_anchors_for_piecewise", self.min_anchors_for_piecewise_input),
+                ("gui.min_anchors_per_segment", self.min_anchors_per_segment_input),
+                ("gui.max_anchor_gap_seconds", self.max_anchor_gap_input),
+            ],
+        )
+        self.advanced_tabs.addTab(drift_tab, self.t("gui.tab.drift"))
+
+        anchor_selection_tab, anchor_selection_form = self._new_form_tab()
+        self._add_form_rows(
+            anchor_selection_form,
+            [
+                ("gui.anchor_selection.anchor_density_per_minute", self.anchor_density_input),
+                ("gui.anchor_selection.max_anchor_density_per_minute", self.max_anchor_density_input),
+                ("gui.anchor_selection.min_anchor_count", self.min_anchor_count_input),
+                ("gui.anchor_selection.max_anchor_count", self.max_anchor_count_input),
+                ("gui.anchor_selection.min_anchor_duration_seconds", self.min_anchor_duration_input),
+                ("gui.anchor_selection.base_anchor_duration_seconds", self.base_anchor_duration_input),
+                ("gui.anchor_selection.max_anchor_duration_seconds", self.max_anchor_duration_input),
+                ("gui.anchor_selection.stratified_bin_count", self.stratified_bin_count_input),
+                ("gui.anchor_selection.anchors_per_bin", self.anchors_per_bin_input),
+                ("gui.anchor_selection.min_snr_db", self.min_snr_db_input),
+                ("gui.anchor_selection.spectral_flatness_threshold", self.spectral_flatness_input),
+            ],
+        )
+        self.advanced_tabs.addTab(anchor_selection_tab, self.t("gui.tab.anchor_selection"))
+
+        anchor_matching_tab, anchor_matching_form = self._new_form_tab()
+        self._add_form_rows(
+            anchor_matching_form,
+            [
+                ("gui.anchor_matching.ncc_min_score", self.ncc_min_score_input),
+                ("gui.anchor_matching.ncc_min_margin", self.ncc_min_margin_input),
+                ("gui.anchor_matching.ncc_min_prominence", self.ncc_min_prominence_input),
+                ("gui.anchor_matching.min_confidence_for_fit", self.min_confidence_for_fit_input),
+                ("gui.anchor_matching.nms_exclusion_seconds", self.nms_exclusion_input),
+                ("gui.anchor_matching.ncc_good_width_seconds", self.ncc_good_width_input),
+                ("gui.anchor_matching.ncc_bad_width_seconds", self.ncc_bad_width_input),
+                ("gui.anchor_matching.ncc_margin_low", self.ncc_margin_low_input),
+                ("gui.anchor_matching.ncc_margin_high", self.ncc_margin_high_input),
+                ("gui.anchor_matching.ncc_prominence_low", self.ncc_prominence_low_input),
+                ("gui.anchor_matching.ncc_prominence_high", self.ncc_prominence_high_input),
+                (None, self.gcc_phat_enabled_checkbox),
+                (None, self.gcc_phat_only_when_ambiguous_checkbox),
+                ("gui.anchor_matching.gcc_phat_agreement_tolerance_seconds", self.gcc_phat_tolerance_input),
+            ],
+        )
+        self.advanced_tabs.addTab(anchor_matching_tab, self.t("gui.tab.anchor_matching"))
+
+        advanced_button = QPushButton(self.t("gui.advanced_settings_open"))
+        self.advanced_button = advanced_button
+        advanced_button.setMinimumHeight(34)
+        advanced_button.clicked.connect(self.open_advanced_settings)
+        self._advanced_button_base_text = advanced_button.text()
+        self._advanced_dialog: QDialog | None = None
+        layout.addWidget(advanced_button)
 
         run_button = QPushButton(self.t("gui.run_alignment"))
         run_button.setMinimumHeight(34)
@@ -301,6 +388,218 @@ class MainWindow(QMainWindow):
     def t(self, key: str, **kwargs: object) -> str:
         return self.catalog.t(key, **kwargs)
 
+    def _new_form_tab(self) -> tuple[QWidget, QFormLayout]:
+        tab = QWidget()
+        form = QFormLayout(tab)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        form.setLabelAlignment(Qt.AlignLeft | Qt.AlignTop)
+        form.setHorizontalSpacing(16)
+        form.setVerticalSpacing(10)
+        return tab, form
+
+    def _add_form_rows(self, form: QFormLayout, rows: list[tuple[str | None, QWidget]]) -> None:
+        for label_key, widget in rows:
+            if label_key is None:
+                form.addRow(widget)
+            else:
+                form.addRow(QLabel(self.t(label_key)), widget)
+
+    def _build_anchor_selection_inputs(self) -> None:
+        defaults = DEFAULT_ANCHOR_SELECTION_CONFIG
+
+        self.anchor_density_input = QDoubleSpinBox()
+        self.anchor_density_input.setRange(0.01, float(_SHARED_NON_NEGATIVE_SPINBOX_MAX))
+        self.anchor_density_input.setDecimals(2)
+        self.anchor_density_input.setSingleStep(0.1)
+        self.anchor_density_input.setValue(defaults.anchor_density_per_minute)
+        self.anchor_density_input.setMinimumWidth(140)
+
+        self.max_anchor_density_input = QDoubleSpinBox()
+        self.max_anchor_density_input.setRange(0.01, float(_SHARED_NON_NEGATIVE_SPINBOX_MAX))
+        self.max_anchor_density_input.setDecimals(2)
+        self.max_anchor_density_input.setSingleStep(0.1)
+        self.max_anchor_density_input.setValue(defaults.max_anchor_density_per_minute)
+        self.max_anchor_density_input.setMinimumWidth(140)
+
+        self.min_anchor_count_input = QSpinBox()
+        self.min_anchor_count_input.setRange(0, _SHARED_NON_NEGATIVE_SPINBOX_MAX)
+        self.min_anchor_count_input.setValue(defaults.min_anchor_count)
+        self.min_anchor_count_input.setMinimumWidth(140)
+
+        self.max_anchor_count_input = QSpinBox()
+        self.max_anchor_count_input.setRange(_MAX_ANCHOR_COUNT_UNLIMITED, _SHARED_NON_NEGATIVE_SPINBOX_MAX)
+        self.max_anchor_count_input.setSpecialValueText(self.t("gui.anchor_selection.max_anchor_count_unlimited"))
+        self.max_anchor_count_input.setValue(
+            _MAX_ANCHOR_COUNT_UNLIMITED if defaults.max_anchor_count is None else defaults.max_anchor_count
+        )
+        self.max_anchor_count_input.setMinimumWidth(140)
+
+        self.min_anchor_duration_input = QDoubleSpinBox()
+        self.min_anchor_duration_input.setRange(0.001, float(_SHARED_NON_NEGATIVE_SPINBOX_MAX))
+        self.min_anchor_duration_input.setDecimals(3)
+        self.min_anchor_duration_input.setSingleStep(0.5)
+        self.min_anchor_duration_input.setValue(defaults.min_anchor_duration_seconds)
+        self.min_anchor_duration_input.setMinimumWidth(140)
+
+        self.base_anchor_duration_input = QDoubleSpinBox()
+        self.base_anchor_duration_input.setRange(0.001, float(_SHARED_NON_NEGATIVE_SPINBOX_MAX))
+        self.base_anchor_duration_input.setDecimals(3)
+        self.base_anchor_duration_input.setSingleStep(0.5)
+        self.base_anchor_duration_input.setValue(defaults.base_anchor_duration_seconds)
+        self.base_anchor_duration_input.setMinimumWidth(140)
+
+        self.max_anchor_duration_input = QDoubleSpinBox()
+        self.max_anchor_duration_input.setRange(0.001, float(_SHARED_NON_NEGATIVE_SPINBOX_MAX))
+        self.max_anchor_duration_input.setDecimals(3)
+        self.max_anchor_duration_input.setSingleStep(0.5)
+        self.max_anchor_duration_input.setValue(defaults.max_anchor_duration_seconds)
+        self.max_anchor_duration_input.setMinimumWidth(140)
+
+        self.stratified_bin_count_input = QSpinBox()
+        self.stratified_bin_count_input.setRange(_STRATIFIED_BIN_COUNT_AUTO, _SHARED_NON_NEGATIVE_SPINBOX_MAX)
+        self.stratified_bin_count_input.setSpecialValueText(self.t("gui.anchor_selection.auto"))
+        self.stratified_bin_count_input.setValue(
+            _STRATIFIED_BIN_COUNT_AUTO if defaults.stratified_bin_count is None else defaults.stratified_bin_count
+        )
+        self.stratified_bin_count_input.setMinimumWidth(140)
+
+        self.anchors_per_bin_input = QSpinBox()
+        self.anchors_per_bin_input.setRange(_ANCHORS_PER_BIN_AUTO, _SHARED_NON_NEGATIVE_SPINBOX_MAX)
+        self.anchors_per_bin_input.setSpecialValueText(self.t("gui.anchor_selection.auto"))
+        self.anchors_per_bin_input.setValue(
+            _ANCHORS_PER_BIN_AUTO if defaults.anchors_per_bin is None else defaults.anchors_per_bin
+        )
+        self.anchors_per_bin_input.setMinimumWidth(140)
+
+        self.min_snr_db_input = QDoubleSpinBox()
+        self.min_snr_db_input.setRange(_MIN_SNR_DB_DISABLED, 200.0)
+        self.min_snr_db_input.setDecimals(1)
+        self.min_snr_db_input.setSingleStep(1.0)
+        self.min_snr_db_input.setSpecialValueText(self.t("gui.anchor_selection.disabled"))
+        self.min_snr_db_input.setValue(_MIN_SNR_DB_DISABLED if defaults.min_snr_db is None else defaults.min_snr_db)
+        self.min_snr_db_input.setMinimumWidth(140)
+
+        self.spectral_flatness_input = QDoubleSpinBox()
+        self.spectral_flatness_input.setRange(_SPECTRAL_FLATNESS_DISABLED, 1.0)
+        self.spectral_flatness_input.setDecimals(3)
+        self.spectral_flatness_input.setSingleStep(0.01)
+        self.spectral_flatness_input.setSpecialValueText(self.t("gui.anchor_selection.disabled"))
+        self.spectral_flatness_input.setValue(
+            _SPECTRAL_FLATNESS_DISABLED
+            if defaults.spectral_flatness_threshold is None
+            else defaults.spectral_flatness_threshold
+        )
+        self.spectral_flatness_input.setMinimumWidth(140)
+
+        self.anchor_density_input.valueChanged.connect(self._sync_anchor_density_bounds)
+        self.max_anchor_density_input.valueChanged.connect(self._sync_anchor_density_bounds)
+        self.min_anchor_duration_input.valueChanged.connect(self._sync_anchor_durations)
+        self.base_anchor_duration_input.valueChanged.connect(self._sync_anchor_durations)
+        self.max_anchor_duration_input.valueChanged.connect(self._sync_anchor_durations)
+        self.min_anchor_count_input.valueChanged.connect(self._sync_max_anchor_count_minimum)
+
+    def _build_anchor_matching_inputs(self) -> None:
+        defaults = DEFAULT_ANCHOR_MATCHING_CONFIG
+
+        self.ncc_min_score_input = QDoubleSpinBox()
+        self.ncc_min_score_input.setRange(-1.0, 0.999)
+        self.ncc_min_score_input.setDecimals(3)
+        self.ncc_min_score_input.setSingleStep(0.01)
+        self.ncc_min_score_input.setValue(defaults.ncc_min_score)
+        self.ncc_min_score_input.setMinimumWidth(140)
+
+        self.ncc_min_margin_input = QDoubleSpinBox()
+        self.ncc_min_margin_input.setRange(0.0, 1.0)
+        self.ncc_min_margin_input.setDecimals(3)
+        self.ncc_min_margin_input.setSingleStep(0.01)
+        self.ncc_min_margin_input.setValue(defaults.ncc_min_margin)
+        self.ncc_min_margin_input.setMinimumWidth(140)
+
+        self.ncc_min_prominence_input = QDoubleSpinBox()
+        self.ncc_min_prominence_input.setRange(0.0, 1.0)
+        self.ncc_min_prominence_input.setDecimals(3)
+        self.ncc_min_prominence_input.setSingleStep(0.01)
+        self.ncc_min_prominence_input.setValue(defaults.ncc_min_prominence)
+        self.ncc_min_prominence_input.setMinimumWidth(140)
+
+        self.min_confidence_for_fit_input = QDoubleSpinBox()
+        self.min_confidence_for_fit_input.setRange(0.0, 1.0)
+        self.min_confidence_for_fit_input.setDecimals(3)
+        self.min_confidence_for_fit_input.setSingleStep(0.01)
+        self.min_confidence_for_fit_input.setValue(defaults.min_confidence_for_fit)
+        self.min_confidence_for_fit_input.setMinimumWidth(140)
+
+        self.nms_exclusion_input = QDoubleSpinBox()
+        self.nms_exclusion_input.setRange(0.001, 0.5)
+        self.nms_exclusion_input.setDecimals(3)
+        self.nms_exclusion_input.setSingleStep(0.005)
+        self.nms_exclusion_input.setValue(defaults.nms_exclusion_seconds)
+        self.nms_exclusion_input.setMinimumWidth(140)
+
+        self.ncc_good_width_input = QDoubleSpinBox()
+        self.ncc_good_width_input.setRange(0.0001, 1.0)
+        self.ncc_good_width_input.setDecimals(4)
+        self.ncc_good_width_input.setSingleStep(0.001)
+        self.ncc_good_width_input.setValue(defaults.ncc_good_width_seconds)
+        self.ncc_good_width_input.setMinimumWidth(140)
+
+        self.ncc_bad_width_input = QDoubleSpinBox()
+        self.ncc_bad_width_input.setRange(0.0001, 1.0)
+        self.ncc_bad_width_input.setDecimals(4)
+        self.ncc_bad_width_input.setSingleStep(0.001)
+        self.ncc_bad_width_input.setValue(defaults.ncc_bad_width_seconds)
+        self.ncc_bad_width_input.setMinimumWidth(140)
+
+        self.ncc_margin_low_input = QDoubleSpinBox()
+        self.ncc_margin_low_input.setRange(0.0, 1.0)
+        self.ncc_margin_low_input.setDecimals(3)
+        self.ncc_margin_low_input.setSingleStep(0.01)
+        self.ncc_margin_low_input.setValue(defaults.ncc_margin_low)
+        self.ncc_margin_low_input.setMinimumWidth(140)
+
+        self.ncc_margin_high_input = QDoubleSpinBox()
+        self.ncc_margin_high_input.setRange(0.0, 1.0)
+        self.ncc_margin_high_input.setDecimals(3)
+        self.ncc_margin_high_input.setSingleStep(0.01)
+        self.ncc_margin_high_input.setValue(defaults.ncc_margin_high)
+        self.ncc_margin_high_input.setMinimumWidth(140)
+
+        self.ncc_prominence_low_input = QDoubleSpinBox()
+        self.ncc_prominence_low_input.setRange(0.0, 1.0)
+        self.ncc_prominence_low_input.setDecimals(3)
+        self.ncc_prominence_low_input.setSingleStep(0.01)
+        self.ncc_prominence_low_input.setValue(defaults.ncc_prominence_low)
+        self.ncc_prominence_low_input.setMinimumWidth(140)
+
+        self.ncc_prominence_high_input = QDoubleSpinBox()
+        self.ncc_prominence_high_input.setRange(0.0, 1.0)
+        self.ncc_prominence_high_input.setDecimals(3)
+        self.ncc_prominence_high_input.setSingleStep(0.01)
+        self.ncc_prominence_high_input.setValue(defaults.ncc_prominence_high)
+        self.ncc_prominence_high_input.setMinimumWidth(140)
+
+        self.gcc_phat_enabled_checkbox = QCheckBox(self.t("gui.anchor_matching.gcc_phat_enabled"))
+        self.gcc_phat_enabled_checkbox.setChecked(defaults.gcc_phat_enabled)
+        self.gcc_phat_only_when_ambiguous_checkbox = QCheckBox(
+            self.t("gui.anchor_matching.gcc_phat_only_when_ambiguous")
+        )
+        self.gcc_phat_only_when_ambiguous_checkbox.setChecked(defaults.gcc_phat_only_when_ambiguous)
+
+        self.gcc_phat_tolerance_input = QDoubleSpinBox()
+        self.gcc_phat_tolerance_input.setRange(0.001, 1.0)
+        self.gcc_phat_tolerance_input.setDecimals(3)
+        self.gcc_phat_tolerance_input.setSingleStep(0.005)
+        self.gcc_phat_tolerance_input.setValue(defaults.gcc_phat_agreement_tolerance_seconds)
+        self.gcc_phat_tolerance_input.setMinimumWidth(140)
+
+        self.ncc_margin_low_input.valueChanged.connect(self._sync_ncc_margin_range)
+        self.ncc_margin_high_input.valueChanged.connect(self._sync_ncc_margin_range)
+        self.ncc_prominence_low_input.valueChanged.connect(self._sync_ncc_prominence_range)
+        self.ncc_prominence_high_input.valueChanged.connect(self._sync_ncc_prominence_range)
+        self.ncc_good_width_input.valueChanged.connect(self._sync_ncc_width_range)
+        self.ncc_bad_width_input.valueChanged.connect(self._sync_ncc_width_range)
+        self.gcc_phat_enabled_checkbox.toggled.connect(self._sync_gcc_phat_gate)
+
     def _configure_path_input(self, widget: QWidget) -> None:
         """Make path fields wide and resizable with the window width.
 
@@ -317,10 +616,38 @@ class MainWindow(QMainWindow):
             return DEFAULT_PYANNOTE_MODEL
         return self.pyannote_model_input.text().strip() or DEFAULT_PYANNOTE_MODEL
 
+    def open_advanced_settings(self) -> None:
+        dialog = self._ensure_advanced_dialog()
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _ensure_advanced_dialog(self) -> QDialog:
+        if self._advanced_dialog is None:
+            dialog = QDialog(self)
+            dialog.setWindowTitle(self.t("gui.advanced_settings"))
+            dialog.setModal(True)
+            dialog_layout = QVBoxLayout(dialog)
+            dialog_layout.setContentsMargins(12, 12, 12, 12)
+            dialog_layout.addWidget(self.advanced_tabs)
+            button_box = QDialogButtonBox(QDialogButtonBox.Close)
+            button_box.rejected.connect(dialog.reject)
+            button_box.accepted.connect(dialog.accept)
+            dialog_layout.addWidget(button_box)
+            self._advanced_dialog = dialog
+        return self._advanced_dialog
+
     def _sync_pyannote_model_input_enabled(self, *_args: object) -> None:
         pyannote_selected = self._selected_vad_strategy() == "pyannote"
-        if pyannote_selected and hasattr(self, "advanced_box"):
-            self.advanced_box.setChecked(True)
+        if pyannote_selected and hasattr(self, "advanced_button"):
+            # The pyannote model field lives on the VAD tab inside the
+            # advanced-settings dialog. Surface that the relevant settings are
+            # behind the button and preselect the VAD tab so it is visible the
+            # moment the dialog opens.
+            self.advanced_tabs.setCurrentWidget(self.advanced_tabs.widget(1))
+            self.advanced_button.setText(self.t("gui.advanced_settings_attention"))
+        elif hasattr(self, "advanced_button"):
+            self.advanced_button.setText(self._advanced_button_base_text)
         self.pyannote_model_input.setEnabled(pyannote_selected)
 
     def _sync_drift_model_gate(self, *_args: object) -> None:
@@ -341,6 +668,48 @@ class MainWindow(QMainWindow):
         self.min_anchors_for_piecewise_input.setMinimum(required_minimum)
         if self.min_anchors_for_piecewise_input.value() < required_minimum:
             self.min_anchors_for_piecewise_input.setValue(required_minimum)
+
+    def _sync_anchor_density_bounds(self, *_args: object) -> None:
+        # Enforce anchor_density_per_minute <= max_anchor_density_per_minute.
+        self.anchor_density_input.setMaximum(self.max_anchor_density_input.value())
+        self.max_anchor_density_input.setMinimum(self.anchor_density_input.value())
+
+    def _sync_anchor_durations(self, *_args: object) -> None:
+        # Enforce min <= base <= max for anchor durations.
+        self.base_anchor_duration_input.setMinimum(self.min_anchor_duration_input.value())
+        self.base_anchor_duration_input.setMaximum(self.max_anchor_duration_input.value())
+        self.min_anchor_duration_input.setMaximum(self.base_anchor_duration_input.value())
+        self.max_anchor_duration_input.setMinimum(self.base_anchor_duration_input.value())
+
+    def _sync_max_anchor_count_minimum(self, *_args: object) -> None:
+        # max_anchor_count (when capped) must stay >= min_anchor_count. The
+        # special "unlimited" value sits at the spin-box minimum, so clamp via
+        # value rather than the range to preserve the sentinel.
+        required_minimum = int(self.min_anchor_count_input.value())
+        current = int(self.max_anchor_count_input.value())
+        if current != _MAX_ANCHOR_COUNT_UNLIMITED and current < required_minimum:
+            self.max_anchor_count_input.setValue(required_minimum)
+
+    def _sync_bounded_pair(self, low_input: QDoubleSpinBox, high_input: QDoubleSpinBox) -> None:
+        # Keep low < high for a paired (low, high) threshold using the low
+        # input's single step as the minimum separation.
+        gap = low_input.singleStep()
+        high_input.setMinimum(low_input.value() + gap)
+        low_input.setMaximum(high_input.value() - gap)
+
+    def _sync_ncc_margin_range(self, *_args: object) -> None:
+        self._sync_bounded_pair(self.ncc_margin_low_input, self.ncc_margin_high_input)
+
+    def _sync_ncc_prominence_range(self, *_args: object) -> None:
+        self._sync_bounded_pair(self.ncc_prominence_low_input, self.ncc_prominence_high_input)
+
+    def _sync_ncc_width_range(self, *_args: object) -> None:
+        self._sync_bounded_pair(self.ncc_good_width_input, self.ncc_bad_width_input)
+
+    def _sync_gcc_phat_gate(self, *_args: object) -> None:
+        enabled = self.gcc_phat_enabled_checkbox.isChecked()
+        self.gcc_phat_only_when_ambiguous_checkbox.setEnabled(enabled)
+        self.gcc_phat_tolerance_input.setEnabled(enabled)
 
     def _sync_checkbox_from_combo(self, *_args: object) -> None:
         method = str(self.stretch_method_combo.currentData())
@@ -382,6 +751,46 @@ class MainWindow(QMainWindow):
         if directory:
             self.output_input.setText(directory)
 
+    def _build_anchor_selection_config(self) -> AnchorSelectionConfig:
+        max_anchor_count = int(self.max_anchor_count_input.value())
+        stratified_bin_count = int(self.stratified_bin_count_input.value())
+        anchors_per_bin = int(self.anchors_per_bin_input.value())
+        min_snr_db = float(self.min_snr_db_input.value())
+        spectral_flatness = float(self.spectral_flatness_input.value())
+        return AnchorSelectionConfig(
+            anchor_density_per_minute=float(self.anchor_density_input.value()),
+            max_anchor_density_per_minute=float(self.max_anchor_density_input.value()),
+            min_anchor_count=int(self.min_anchor_count_input.value()),
+            max_anchor_count=(None if max_anchor_count == _MAX_ANCHOR_COUNT_UNLIMITED else max_anchor_count),
+            stratified_bin_count=(None if stratified_bin_count == _STRATIFIED_BIN_COUNT_AUTO else stratified_bin_count),
+            anchors_per_bin=(None if anchors_per_bin == _ANCHORS_PER_BIN_AUTO else anchors_per_bin),
+            min_anchor_duration_seconds=float(self.min_anchor_duration_input.value()),
+            base_anchor_duration_seconds=float(self.base_anchor_duration_input.value()),
+            max_anchor_duration_seconds=float(self.max_anchor_duration_input.value()),
+            min_snr_db=(None if min_snr_db <= _MIN_SNR_DB_DISABLED else min_snr_db),
+            spectral_flatness_threshold=(
+                None if spectral_flatness <= _SPECTRAL_FLATNESS_DISABLED else spectral_flatness
+            ),
+        )
+
+    def _build_anchor_matching_config(self) -> AnchorMatchingConfig:
+        return AnchorMatchingConfig(
+            nms_exclusion_seconds=float(self.nms_exclusion_input.value()),
+            ncc_min_score=float(self.ncc_min_score_input.value()),
+            ncc_min_margin=float(self.ncc_min_margin_input.value()),
+            ncc_min_prominence=float(self.ncc_min_prominence_input.value()),
+            ncc_good_width_seconds=float(self.ncc_good_width_input.value()),
+            ncc_bad_width_seconds=float(self.ncc_bad_width_input.value()),
+            ncc_margin_low=float(self.ncc_margin_low_input.value()),
+            ncc_margin_high=float(self.ncc_margin_high_input.value()),
+            ncc_prominence_low=float(self.ncc_prominence_low_input.value()),
+            ncc_prominence_high=float(self.ncc_prominence_high_input.value()),
+            gcc_phat_enabled=self.gcc_phat_enabled_checkbox.isChecked(),
+            gcc_phat_only_when_ambiguous=self.gcc_phat_only_when_ambiguous_checkbox.isChecked(),
+            gcc_phat_agreement_tolerance_seconds=float(self.gcc_phat_tolerance_input.value()),
+            min_confidence_for_fit=float(self.min_confidence_for_fit_input.value()),
+        )
+
     def run(self) -> None:
         master_path = self.master_input.text().strip()
         output_dir = self.output_input.text().strip()
@@ -398,6 +807,12 @@ class MainWindow(QMainWindow):
             return
 
         vad_strategy = self._selected_vad_strategy()
+        try:
+            anchor_selection = self._build_anchor_selection_config()
+            anchor_matching = self._build_anchor_matching_config()
+        except ValueError as exc:
+            self._show_error(str(exc))
+            return
         options = AlignmentOptions(
             master=Path(master_path),
             tracks=[Path(track) for track in tracks],
@@ -418,6 +833,8 @@ class MainWindow(QMainWindow):
             max_anchor_gap_seconds=(
                 None if self.max_anchor_gap_input.value() <= 0.0 else float(self.max_anchor_gap_input.value())
             ),
+            anchor_selection=anchor_selection,
+            anchor_matching=anchor_matching,
             verbose_report=self.verbose_report_checkbox.isChecked(),
         )
 
@@ -475,7 +892,7 @@ class MainWindow(QMainWindow):
             return
         if exit_code == 0:
             self.progress_bar.setValue(100)
-            self.progress_label.setText("100.0%")
+            self.progress_label.setText(self.t("gui.progress_done_percent"))
             self.eta_label.setText(self.t("gui.progress_eta_done"))
             self.current_task_label.setText(self.t("gui.current_task_done"))
             self.append_log(self.t("gui.log.success"))

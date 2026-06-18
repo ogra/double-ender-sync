@@ -8,13 +8,20 @@ from scipy.interpolate import PchipInterpolator
 
 from double_ender_sync.analysis.anchors import AnchorCandidate
 from double_ender_sync.analysis.features import (
+    NccPeakDiagnostics,
     clamp01,
     extract_anchor_feature,
     gcc_phat_scores,
     ncc_peak_diagnostics,
     normalized_correlation_scores,
 )
-from double_ender_sync.config import AnchorMatchingConfig, DriftModelConfig
+from double_ender_sync.config import (
+    AnchorMatchingConfig,
+    DEFAULT_INITIAL_OFFSET_SAFETY_CONFIG,
+    DriftModelConfig,
+    InitialOffsetSafetyConfig,
+)
+from double_ender_sync.analysis.vad import SpeechSegment
 
 
 LOGGER = logging.getLogger("double_ender_sync")
@@ -758,13 +765,30 @@ def match_anchors_for_drift(
     initial_offset_seconds: float,
     search_radius_seconds: float = 6.0,
     matching_config: AnchorMatchingConfig | None = None,
+    master_speech_segments: list[SpeechSegment] | None = None,
+    safety_config: InitialOffsetSafetyConfig | None = None,
 ) -> list[AnchorMatch]:
     if matching_config is None:
         from double_ender_sync.config import DEFAULT_ANCHOR_MATCHING_CONFIG
         matching_config = DEFAULT_ANCHOR_MATCHING_CONFIG
+    if safety_config is None:
+        safety_config = DEFAULT_INITIAL_OFFSET_SAFETY_CONFIG
 
     matches: list[AnchorMatch] = []
     master_duration = master_samples.shape[0] / sample_rate
+
+    vad_filter_enabled = safety_config.master_vad_filter_enabled
+    # Treat both an empty segment list and None as uncertain: VAD may have
+    # missed attenuated speech on a quiet master, so we rely on the configured
+    # uncertain policy rather than confidently rejecting every match.
+    vad_available = (
+        master_speech_segments is not None and len(master_speech_segments) > 0
+    )
+
+    if vad_filter_enabled and not vad_available and safety_config.master_vad_uncertain_policy == "warn":
+        LOGGER.warning(
+            "master_vad_unavailable: drift-anchor matching continues without master VAD filtering"
+        )
 
     for anchor in anchors:
         local_start_idx = int(anchor.local_start * sample_rate)
@@ -783,6 +807,29 @@ def match_anchors_for_drift(
         search_region = master_samples[search_start_idx:search_end_idx]
         if search_region.size < len(feature):
             continue
+
+        if vad_filter_enabled and not vad_available and safety_config.master_vad_uncertain_policy == "reject":
+            # VAD data is unavailable and policy is to reject. Clamp the
+            # expected span to the master timeline so diagnostics never carry
+            # negative or out-of-range timestamps.
+            clamped_ms = max(0.0, min(master_duration, expected_master_start))
+            clamped_me = max(0.0, min(master_duration, expected_master_start + (local_clip.size / sample_rate)))
+            matches.append(
+                AnchorMatch(
+                    local_start=anchor.local_start,
+                    local_end=anchor.local_end,
+                    master_start=clamped_ms,
+                    master_end=clamped_me,
+                    offset_seconds=clamped_ms - anchor.local_start,
+                    confidence=0.0,
+                    score=0.0,
+                    rejected_reason="master_vad_unavailable",
+                )
+            )
+            continue
+        # "warn" and "skip" policies, and the vad_available path, fall through
+        # to NCC matching. When VAD is available the overlap check runs
+        # post-NCC on the actual matched span (see below).
 
         row_count = search_region.size - len(feature) + 1
         LOGGER.debug(
@@ -806,6 +853,22 @@ def match_anchors_for_drift(
         if peak_diagnostics is None:
             continue
 
+        # Post-NCC master VAD check: measure speech overlap at the actual
+        # matched span. If the best peak lands outside speech, try lower
+        # peaks before giving up on the anchor.
+        vad_rejected_reason: str | None = None
+        if vad_filter_enabled and vad_available:
+            peak_diagnostics, vad_rejected_reason = _select_vad_valid_peak(
+                scores=scores,
+                initial_diagnostics=peak_diagnostics,
+                sample_rate=sample_rate,
+                search_start_idx=search_start_idx,
+                local_clip_size=local_clip.size,
+                matching_config=matching_config,
+                safety_config=safety_config,
+                master_speech_segments=master_speech_segments,
+            )
+
         best_score = peak_diagnostics.best_score
         best_lag_samples = peak_diagnostics.best_lag_samples
         second_score = peak_diagnostics.second_score
@@ -821,6 +884,47 @@ def match_anchors_for_drift(
         master_start = (search_start_idx + best_lag_samples) / sample_rate
         master_end = master_start + (local_clip.size / sample_rate)
         offset_seconds = master_start - anchor.local_start
+
+        if vad_rejected_reason is not None:
+            # Preserve NCC diagnostics so the report shows the actual match
+            # strength even though master VAD rejected it.
+            vad_quality, vad_uniqueness, vad_sharpness = _compute_ncc_continuous_confidence(
+                peak_diagnostics, matching_config, sample_rate
+            )
+            matches.append(
+                AnchorMatch(
+                    local_start=anchor.local_start,
+                    local_end=anchor.local_end,
+                    master_start=master_start,
+                    master_end=master_end,
+                    offset_seconds=offset_seconds,
+                    confidence=0.0,
+                    score=best_score,
+                    rejected_reason=vad_rejected_reason,
+                    ncc_best_score=best_score,
+                    ncc_second_score=second_score,
+                    ncc_margin=margin,
+                    ncc_prominence=prominence,
+                    ncc_width_seconds=ncc_width_seconds,
+                    ncc_plateau_size_seconds=ncc_plateau_size_seconds,
+                    ncc_peak_lag_seconds=ncc_peak_lag_seconds,
+                    match_quality=vad_quality,
+                    match_uniqueness=vad_uniqueness,
+                    match_sharpness=vad_sharpness,
+                    match_agreement=1.0,
+                )
+            )
+            LOGGER.debug(
+                "drift-anchor-rejected local_start=%.3f matched_master=[%.3f, %.3f]s "
+                "ncc_best=%.4f ncc_margin=%s reason=%s",
+                anchor.local_start,
+                master_start,
+                master_end,
+                best_score,
+                f"{margin:.4f}" if margin is not None else "None",
+                vad_rejected_reason,
+            )
+            continue
 
         passes_gate, rejection_reason = _match_diagnostics_passes_hard_gate(
             peak_diagnostics, matching_config
@@ -919,6 +1023,119 @@ def match_anchors_for_drift(
         )
 
     return matches
+
+
+def _select_vad_valid_peak(
+    scores: np.ndarray,
+    initial_diagnostics: NccPeakDiagnostics,
+    sample_rate: int,
+    search_start_idx: int,
+    local_clip_size: int,
+    matching_config: AnchorMatchingConfig,
+    safety_config: InitialOffsetSafetyConfig,
+    master_speech_segments: list[SpeechSegment],
+    max_candidates: int = 5,
+) -> tuple[NccPeakDiagnostics, str | None]:
+    """Return the best NCC peak whose matched span overlaps master speech.
+
+    If the highest-scoring peak falls outside the master VAD speech intervals,
+    lower-scoring peaks are tried in order until one overlaps speech or the
+    candidate budget is exhausted. The second return value is a VAD rejection
+    reason when no candidate is valid.
+    """
+
+    nms_samples = max(1, int(round(matching_config.nms_exclusion_seconds * sample_rate)))
+    suppressed_scores = scores.copy()
+    diagnostics = initial_diagnostics
+
+    for _ in range(max_candidates):
+        best_lag = diagnostics.best_lag_samples
+        master_start = (search_start_idx + best_lag) / sample_rate
+        master_end = master_start + (local_clip_size / sample_rate)
+
+        overlap_ratio = _master_vad_overlap_ratio(
+            master_start,
+            master_end,
+            master_speech_segments,
+            padding_seconds=safety_config.master_vad_padding_seconds,
+        )
+        if overlap_ratio >= safety_config.master_vad_min_overlap_ratio:
+            return diagnostics, None
+
+        # Suppress this peak region and recompute diagnostics for the next best.
+        start = max(0, best_lag - nms_samples)
+        end = min(len(suppressed_scores), best_lag + nms_samples + 1)
+        suppressed_scores[start:end] = -1.0
+
+        next_diagnostics = ncc_peak_diagnostics(
+            suppressed_scores,
+            sample_rate=sample_rate,
+            nms_exclusion_seconds=matching_config.nms_exclusion_seconds,
+        )
+        if next_diagnostics is None or next_diagnostics.best_score < matching_config.ncc_min_score:
+            break
+        diagnostics = next_diagnostics
+
+    # No VAD-valid candidate found; report the original best peak as rejected.
+    best_lag = initial_diagnostics.best_lag_samples
+    master_start = (search_start_idx + best_lag) / sample_rate
+    master_end = master_start + (local_clip_size / sample_rate)
+    overlap_ratio = _master_vad_overlap_ratio(
+        master_start,
+        master_end,
+        master_speech_segments,
+        padding_seconds=safety_config.master_vad_padding_seconds,
+    )
+    rejected_reason = (
+        "master_vad_low_overlap_ratio"
+        if overlap_ratio > 0.0
+        else "master_vad_no_overlap"
+    )
+    return initial_diagnostics, rejected_reason
+
+
+def _master_vad_overlap_ratio(
+    search_start_seconds: float,
+    search_end_seconds: float,
+    speech_segments: list[SpeechSegment],
+    padding_seconds: float = 0.25,
+) -> float:
+    """Return the fraction of the search interval that overlaps master speech."""
+
+    search_start = min(search_start_seconds, search_end_seconds)
+    search_end = max(search_start_seconds, search_end_seconds)
+    search_duration = max(0.0, search_end - search_start)
+    if search_duration <= 0.0:
+        return 0.0
+
+    # Build padded speech intervals and merge overlaps so that overlapping
+    # segments (or segments that overlap after padding) do not inflate the
+    # overlap ratio through double-counting.
+    intervals = [
+        (segment.start - padding_seconds, segment.end + padding_seconds)
+        for segment in speech_segments
+        if segment.end + padding_seconds > segment.start - padding_seconds
+    ]
+    if not intervals:
+        return 0.0
+
+    intervals.sort()
+    merged: list[tuple[float, float]] = [intervals[0]]
+    for start, end in intervals[1:]:
+        prev_start, prev_end = merged[-1]
+        if start <= prev_end:
+            merged[-1] = (prev_start, max(prev_end, end))
+        else:
+            merged.append((start, end))
+
+    overlap_seconds = 0.0
+    for start, end in merged:
+        clip_start = max(search_start, start)
+        clip_end = min(search_end, end)
+        if clip_end > clip_start:
+            overlap_seconds += clip_end - clip_start
+
+    return min(1.0, overlap_seconds / search_duration)
 
 
 def fit_linear_drift_model(

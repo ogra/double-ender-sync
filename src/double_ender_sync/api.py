@@ -7,7 +7,18 @@ from typing import Literal, Sequence
 from double_ender_sync import cli
 from double_ender_sync._version import get_version as _get_version
 from double_ender_sync.analysis.vad import DEFAULT_PYANNOTE_MODEL
-from double_ender_sync.config import DEFAULT_ANCHOR_MATCHING_CONFIG, DEFAULT_ANCHOR_SELECTION_CONFIG, DEFAULT_DRIFT_MODEL_CONFIG, AnchorMatchingConfig, AnchorSelectionConfig, DriftModelConfig, DriftModelName, SplineKnotSource
+from double_ender_sync.config import (
+    DEFAULT_ANCHOR_MATCHING_CONFIG,
+    DEFAULT_ANCHOR_SELECTION_CONFIG,
+    DEFAULT_DRIFT_MODEL_CONFIG,
+    DEFAULT_INITIAL_OFFSET_SAFETY_CONFIG,
+    AnchorMatchingConfig,
+    AnchorSelectionConfig,
+    DriftModelConfig,
+    DriftModelName,
+    InitialOffsetSafetyConfig,
+    SplineKnotSource,
+)
 
 
 def get_version() -> str:
@@ -61,6 +72,7 @@ class AlignmentOptions:
     pyannote_model: str = DEFAULT_PYANNOTE_MODEL
     anchor_selection: AnchorSelectionConfig = field(default_factory=lambda: DEFAULT_ANCHOR_SELECTION_CONFIG)
     anchor_matching: AnchorMatchingConfig = field(default_factory=lambda: DEFAULT_ANCHOR_MATCHING_CONFIG)
+    initial_offset_safety: InitialOffsetSafetyConfig = field(default_factory=lambda: DEFAULT_INITIAL_OFFSET_SAFETY_CONFIG)
     lang: str | None = None
     verbose_report: bool = False
 
@@ -106,6 +118,9 @@ def build_cli_argv(options: AlignmentOptions) -> list[str]:
         raise ValueError(f"vad_strategy must be one of {sorted(allowed_vad_strategies)}")
     if options.vad_strategy != "pyannote" and options.pyannote_model != DEFAULT_PYANNOTE_MODEL:
         raise ValueError("pyannote_model is only valid when vad_strategy='pyannote'")
+    # Validate the full safety config so that invalid API input fails early
+    # rather than silently becoming CLI defaults.
+    InitialOffsetSafetyConfig(**options.initial_offset_safety.as_dict())
 
     argv: list[str] = [
         "--master",
@@ -212,6 +227,36 @@ def build_cli_argv(options: AlignmentOptions) -> list[str]:
         argv.append("--gcc-phat-only-when-ambiguous")
     else:
         argv.append("--no-gcc-phat-ambiguous-only")
+
+    safety = options.initial_offset_safety
+    argv.extend([
+        "--initial-offset-min-confidence", str(safety.initial_offset_min_confidence),
+        "--high-confidence-threshold", str(safety.high_confidence_threshold),
+        "--medium-confidence-threshold", str(safety.medium_confidence_threshold),
+        "--low-confidence-threshold", str(safety.low_confidence_threshold),
+        "--coarse-fallback-sample-rate", str(safety.coarse_fallback_sample_rate),
+        "--coarse-fallback-min-peak-margin", str(safety.coarse_fallback_min_peak_margin),
+        "--coarse-fallback-max-duration-seconds",
+        "none" if safety.coarse_fallback_max_duration_seconds is None else str(safety.coarse_fallback_max_duration_seconds),
+        "--coarse-fallback-max-memory-mb", str(safety.coarse_fallback_max_memory_mb),
+        "--coarse-fallback-min-confidence", str(safety.coarse_fallback_min_confidence),
+        "--coarse-fallback-confidence-margin", str(safety.coarse_fallback_confidence_margin),
+        "--max-drift-search-radius-seconds", str(safety.max_drift_search_radius_seconds),
+        "--high-confidence-search-radius-seconds", str(safety.high_confidence_search_radius_seconds),
+        "--medium-confidence-search-radius-seconds", str(safety.medium_confidence_search_radius_seconds),
+        "--low-confidence-search-radius-seconds", str(safety.low_confidence_search_radius_seconds),
+        "--master-vad-min-overlap-ratio", str(safety.master_vad_min_overlap_ratio),
+        "--master-vad-padding-seconds", str(safety.master_vad_padding_seconds),
+        "--master-vad-uncertain-policy", safety.master_vad_uncertain_policy,
+    ])
+    if safety.coarse_fallback_enabled:
+        argv.append("--coarse-fallback-enabled")
+    else:
+        argv.append("--no-coarse-fallback")
+    if safety.master_vad_filter_enabled:
+        argv.append("--master-vad-filter-enabled")
+    else:
+        argv.append("--no-master-vad-filter")
 
     if options.vad_strategy == "pyannote":
         argv.extend(["--pyannote-model", options.pyannote_model])

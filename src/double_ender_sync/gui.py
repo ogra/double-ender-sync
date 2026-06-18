@@ -40,8 +40,10 @@ from double_ender_sync.config import (
     DEFAULT_ANCHOR_MATCHING_CONFIG,
     DEFAULT_ANCHOR_SELECTION_CONFIG,
     DEFAULT_DRIFT_MODEL_CONFIG,
+    DEFAULT_INITIAL_OFFSET_SAFETY_CONFIG,
     AnchorMatchingConfig,
     AnchorSelectionConfig,
+    InitialOffsetSafetyConfig,
 )
 from double_ender_sync.i18n import TranslationCatalog, resolve_language
 from double_ender_sync.i18n.resolver import extract_explicit_lang
@@ -235,6 +237,7 @@ class MainWindow(QMainWindow):
 
         self._build_anchor_selection_inputs()
         self._build_anchor_matching_inputs()
+        self._build_initial_offset_safety_inputs()
 
         self.vad_strategy_input.currentIndexChanged.connect(self._sync_pyannote_model_input_enabled)
         self.drift_model_input.currentIndexChanged.connect(self._sync_drift_model_gate)
@@ -253,6 +256,9 @@ class MainWindow(QMainWindow):
         self._sync_ncc_prominence_range()
         self._sync_ncc_width_range()
         self._sync_gcc_phat_gate()
+        self._sync_coarse_fallback_gate()
+        self._sync_master_vad_gate()
+        self._sync_confidence_thresholds()
 
         layout.addLayout(form_layout)
 
@@ -337,6 +343,33 @@ class MainWindow(QMainWindow):
             ],
         )
         self.advanced_tabs.addTab(anchor_matching_tab, self.t("gui.tab.anchor_matching"))
+
+        initial_offset_safety_tab, initial_offset_safety_form = self._new_form_tab()
+        self._add_form_rows(
+            initial_offset_safety_form,
+            [
+                ("gui.initial_offset_safety.initial_offset_min_confidence", self.initial_offset_min_confidence_input),
+                ("gui.initial_offset_safety.high_confidence_threshold", self.high_confidence_threshold_input),
+                ("gui.initial_offset_safety.medium_confidence_threshold", self.medium_confidence_threshold_input),
+                ("gui.initial_offset_safety.low_confidence_threshold", self.low_confidence_threshold_input),
+                (None, self.coarse_fallback_enabled_checkbox),
+                ("gui.initial_offset_safety.coarse_fallback_sample_rate", self.coarse_fallback_sample_rate_input),
+                ("gui.initial_offset_safety.coarse_fallback_min_peak_margin", self.coarse_fallback_min_peak_margin_input),
+                ("gui.initial_offset_safety.coarse_fallback_max_duration_seconds", self.coarse_fallback_max_duration_input),
+                ("gui.initial_offset_safety.coarse_fallback_max_memory_mb", self.coarse_fallback_max_memory_input),
+                ("gui.initial_offset_safety.coarse_fallback_min_confidence", self.coarse_fallback_min_confidence_input),
+                ("gui.initial_offset_safety.coarse_fallback_confidence_margin", self.coarse_fallback_confidence_margin_input),
+                ("gui.initial_offset_safety.max_drift_search_radius_seconds", self.max_drift_search_radius_input),
+                ("gui.initial_offset_safety.high_confidence_search_radius_seconds", self.high_confidence_search_radius_input),
+                ("gui.initial_offset_safety.medium_confidence_search_radius_seconds", self.medium_confidence_search_radius_input),
+                ("gui.initial_offset_safety.low_confidence_search_radius_seconds", self.low_confidence_search_radius_input),
+                (None, self.master_vad_filter_enabled_checkbox),
+                ("gui.initial_offset_safety.master_vad_min_overlap_ratio", self.master_vad_min_overlap_ratio_input),
+                ("gui.initial_offset_safety.master_vad_padding_seconds", self.master_vad_padding_input),
+                ("gui.initial_offset_safety.master_vad_uncertain_policy", self.master_vad_uncertain_policy_combo),
+            ],
+        )
+        self.advanced_tabs.addTab(initial_offset_safety_tab, self.t("gui.tab.initial_offset_safety"))
 
         advanced_button = QPushButton(self.t("gui.advanced_settings_open"))
         self.advanced_button = advanced_button
@@ -600,6 +633,196 @@ class MainWindow(QMainWindow):
         self.ncc_bad_width_input.valueChanged.connect(self._sync_ncc_width_range)
         self.gcc_phat_enabled_checkbox.toggled.connect(self._sync_gcc_phat_gate)
 
+    def _build_initial_offset_safety_inputs(self) -> None:
+        defaults = DEFAULT_INITIAL_OFFSET_SAFETY_CONFIG
+
+        self.initial_offset_min_confidence_input = QDoubleSpinBox()
+        self.initial_offset_min_confidence_input.setRange(0.0, 1.0)
+        self.initial_offset_min_confidence_input.setDecimals(2)
+        self.initial_offset_min_confidence_input.setSingleStep(0.01)
+        self.initial_offset_min_confidence_input.setValue(defaults.initial_offset_min_confidence)
+        self.initial_offset_min_confidence_input.setMinimumWidth(140)
+
+        self.high_confidence_threshold_input = QDoubleSpinBox()
+        self.high_confidence_threshold_input.setRange(0.01, 0.99)
+        self.high_confidence_threshold_input.setDecimals(2)
+        self.high_confidence_threshold_input.setSingleStep(0.01)
+        self.high_confidence_threshold_input.setValue(defaults.high_confidence_threshold)
+        self.high_confidence_threshold_input.setMinimumWidth(140)
+
+        self.medium_confidence_threshold_input = QDoubleSpinBox()
+        self.medium_confidence_threshold_input.setRange(0.01, 0.99)
+        self.medium_confidence_threshold_input.setDecimals(2)
+        self.medium_confidence_threshold_input.setSingleStep(0.01)
+        self.medium_confidence_threshold_input.setValue(defaults.medium_confidence_threshold)
+        self.medium_confidence_threshold_input.setMinimumWidth(140)
+
+        self.low_confidence_threshold_input = QDoubleSpinBox()
+        self.low_confidence_threshold_input.setRange(0.01, 0.99)
+        self.low_confidence_threshold_input.setDecimals(2)
+        self.low_confidence_threshold_input.setSingleStep(0.01)
+        self.low_confidence_threshold_input.setValue(defaults.low_confidence_threshold)
+        self.low_confidence_threshold_input.setMinimumWidth(140)
+
+        self.coarse_fallback_enabled_checkbox = QCheckBox(self.t("gui.initial_offset_safety.coarse_fallback_enabled"))
+        self.coarse_fallback_enabled_checkbox.setChecked(defaults.coarse_fallback_enabled)
+
+        self.coarse_fallback_sample_rate_input = QSpinBox()
+        self.coarse_fallback_sample_rate_input.setRange(1, _SHARED_NON_NEGATIVE_SPINBOX_MAX)
+        self.coarse_fallback_sample_rate_input.setSingleStep(100)
+        self.coarse_fallback_sample_rate_input.setValue(defaults.coarse_fallback_sample_rate)
+        self.coarse_fallback_sample_rate_input.setMinimumWidth(140)
+
+        self.coarse_fallback_min_peak_margin_input = QDoubleSpinBox()
+        self.coarse_fallback_min_peak_margin_input.setRange(0.0, 1.0)
+        self.coarse_fallback_min_peak_margin_input.setDecimals(2)
+        self.coarse_fallback_min_peak_margin_input.setSingleStep(0.01)
+        self.coarse_fallback_min_peak_margin_input.setValue(defaults.coarse_fallback_min_peak_margin)
+        self.coarse_fallback_min_peak_margin_input.setMinimumWidth(140)
+
+        self.coarse_fallback_max_duration_input = QDoubleSpinBox()
+        self.coarse_fallback_max_duration_input.setRange(0.0, float(_SHARED_NON_NEGATIVE_SPINBOX_MAX))
+        self.coarse_fallback_max_duration_input.setDecimals(1)
+        self.coarse_fallback_max_duration_input.setSingleStep(60.0)
+        self.coarse_fallback_max_duration_input.setSpecialValueText(
+            self.t("gui.initial_offset_safety.coarse_fallback_max_duration_disabled")
+        )
+        self.coarse_fallback_max_duration_input.setValue(
+            0.0 if defaults.coarse_fallback_max_duration_seconds is None else defaults.coarse_fallback_max_duration_seconds
+        )
+        self.coarse_fallback_max_duration_input.setMinimumWidth(140)
+
+        self.coarse_fallback_max_memory_input = QDoubleSpinBox()
+        self.coarse_fallback_max_memory_input.setRange(1.0, float(_SHARED_NON_NEGATIVE_SPINBOX_MAX))
+        self.coarse_fallback_max_memory_input.setDecimals(1)
+        self.coarse_fallback_max_memory_input.setSingleStep(64.0)
+        self.coarse_fallback_max_memory_input.setValue(defaults.coarse_fallback_max_memory_mb)
+        self.coarse_fallback_max_memory_input.setMinimumWidth(140)
+
+        self.coarse_fallback_min_confidence_input = QDoubleSpinBox()
+        self.coarse_fallback_min_confidence_input.setRange(0.0, 1.0)
+        self.coarse_fallback_min_confidence_input.setDecimals(2)
+        self.coarse_fallback_min_confidence_input.setSingleStep(0.01)
+        self.coarse_fallback_min_confidence_input.setValue(defaults.coarse_fallback_min_confidence)
+        self.coarse_fallback_min_confidence_input.setMinimumWidth(140)
+
+        self.coarse_fallback_confidence_margin_input = QDoubleSpinBox()
+        self.coarse_fallback_confidence_margin_input.setRange(0.0, 1.0)
+        self.coarse_fallback_confidence_margin_input.setDecimals(2)
+        self.coarse_fallback_confidence_margin_input.setSingleStep(0.01)
+        self.coarse_fallback_confidence_margin_input.setValue(defaults.coarse_fallback_confidence_margin)
+        self.coarse_fallback_confidence_margin_input.setMinimumWidth(140)
+
+        self.max_drift_search_radius_input = QDoubleSpinBox()
+        self.max_drift_search_radius_input.setRange(0.1, float(_SHARED_NON_NEGATIVE_SPINBOX_MAX))
+        self.max_drift_search_radius_input.setDecimals(1)
+        self.max_drift_search_radius_input.setSingleStep(1.0)
+        self.max_drift_search_radius_input.setValue(defaults.max_drift_search_radius_seconds)
+        self.max_drift_search_radius_input.setMinimumWidth(140)
+
+        self.high_confidence_search_radius_input = QDoubleSpinBox()
+        self.high_confidence_search_radius_input.setRange(0.1, float(_SHARED_NON_NEGATIVE_SPINBOX_MAX))
+        self.high_confidence_search_radius_input.setDecimals(1)
+        self.high_confidence_search_radius_input.setSingleStep(0.5)
+        self.high_confidence_search_radius_input.setValue(defaults.high_confidence_search_radius_seconds)
+        self.high_confidence_search_radius_input.setMinimumWidth(140)
+
+        self.medium_confidence_search_radius_input = QDoubleSpinBox()
+        self.medium_confidence_search_radius_input.setRange(0.1, float(_SHARED_NON_NEGATIVE_SPINBOX_MAX))
+        self.medium_confidence_search_radius_input.setDecimals(1)
+        self.medium_confidence_search_radius_input.setSingleStep(0.5)
+        self.medium_confidence_search_radius_input.setValue(defaults.medium_confidence_search_radius_seconds)
+        self.medium_confidence_search_radius_input.setMinimumWidth(140)
+
+        self.low_confidence_search_radius_input = QDoubleSpinBox()
+        self.low_confidence_search_radius_input.setRange(0.1, float(_SHARED_NON_NEGATIVE_SPINBOX_MAX))
+        self.low_confidence_search_radius_input.setDecimals(1)
+        self.low_confidence_search_radius_input.setSingleStep(0.5)
+        self.low_confidence_search_radius_input.setValue(defaults.low_confidence_search_radius_seconds)
+        self.low_confidence_search_radius_input.setMinimumWidth(140)
+
+        self.master_vad_filter_enabled_checkbox = QCheckBox(self.t("gui.initial_offset_safety.master_vad_filter_enabled"))
+        self.master_vad_filter_enabled_checkbox.setChecked(defaults.master_vad_filter_enabled)
+
+        self.master_vad_min_overlap_ratio_input = QDoubleSpinBox()
+        self.master_vad_min_overlap_ratio_input.setRange(0.0, 1.0)
+        self.master_vad_min_overlap_ratio_input.setDecimals(2)
+        self.master_vad_min_overlap_ratio_input.setSingleStep(0.01)
+        self.master_vad_min_overlap_ratio_input.setValue(defaults.master_vad_min_overlap_ratio)
+        self.master_vad_min_overlap_ratio_input.setMinimumWidth(140)
+
+        self.master_vad_padding_input = QDoubleSpinBox()
+        self.master_vad_padding_input.setRange(0.0, float(_SHARED_NON_NEGATIVE_SPINBOX_MAX))
+        self.master_vad_padding_input.setDecimals(2)
+        self.master_vad_padding_input.setSingleStep(0.01)
+        self.master_vad_padding_input.setValue(defaults.master_vad_padding_seconds)
+        self.master_vad_padding_input.setMinimumWidth(140)
+
+        self.master_vad_uncertain_policy_combo = QComboBox()
+        self.master_vad_uncertain_policy_combo.addItem(
+            self.t("gui.initial_offset_safety.master_vad_uncertain_policy.warn"), "warn"
+        )
+        self.master_vad_uncertain_policy_combo.addItem(
+            self.t("gui.initial_offset_safety.master_vad_uncertain_policy.skip"), "skip"
+        )
+        self.master_vad_uncertain_policy_combo.addItem(
+            self.t("gui.initial_offset_safety.master_vad_uncertain_policy.reject"), "reject"
+        )
+        self.master_vad_uncertain_policy_combo.setCurrentIndex(
+            self.master_vad_uncertain_policy_combo.findData(defaults.master_vad_uncertain_policy)
+        )
+
+        self.coarse_fallback_enabled_checkbox.toggled.connect(self._sync_coarse_fallback_gate)
+        self.master_vad_filter_enabled_checkbox.toggled.connect(self._sync_master_vad_gate)
+        self.initial_offset_min_confidence_input.valueChanged.connect(self._sync_confidence_thresholds)
+        self.low_confidence_threshold_input.valueChanged.connect(self._sync_confidence_thresholds)
+        self.medium_confidence_threshold_input.valueChanged.connect(self._sync_confidence_thresholds)
+        self.high_confidence_threshold_input.valueChanged.connect(self._sync_confidence_thresholds)
+
+    def _sync_coarse_fallback_gate(self, *_args: object) -> None:
+        enabled = self.coarse_fallback_enabled_checkbox.isChecked()
+        self.coarse_fallback_sample_rate_input.setEnabled(enabled)
+        self.coarse_fallback_min_peak_margin_input.setEnabled(enabled)
+        self.coarse_fallback_max_duration_input.setEnabled(enabled)
+        self.coarse_fallback_max_memory_input.setEnabled(enabled)
+        self.coarse_fallback_min_confidence_input.setEnabled(enabled)
+        self.coarse_fallback_confidence_margin_input.setEnabled(enabled)
+
+    def _sync_master_vad_gate(self, *_args: object) -> None:
+        enabled = self.master_vad_filter_enabled_checkbox.isChecked()
+        self.master_vad_min_overlap_ratio_input.setEnabled(enabled)
+        self.master_vad_padding_input.setEnabled(enabled)
+        self.master_vad_uncertain_policy_combo.setEnabled(enabled)
+
+    def _sync_confidence_thresholds(self, *_args: object) -> None:
+        self._sync_bounded_pair(self.low_confidence_threshold_input, self.medium_confidence_threshold_input)
+        self._sync_bounded_pair(self.medium_confidence_threshold_input, self.high_confidence_threshold_input)
+        self.initial_offset_min_confidence_input.setMinimum(self.low_confidence_threshold_input.value())
+
+    def _build_initial_offset_safety_config(self) -> InitialOffsetSafetyConfig:
+        max_duration_val = float(self.coarse_fallback_max_duration_input.value())
+        return InitialOffsetSafetyConfig(
+            initial_offset_min_confidence=float(self.initial_offset_min_confidence_input.value()),
+            high_confidence_threshold=float(self.high_confidence_threshold_input.value()),
+            medium_confidence_threshold=float(self.medium_confidence_threshold_input.value()),
+            low_confidence_threshold=float(self.low_confidence_threshold_input.value()),
+            coarse_fallback_enabled=self.coarse_fallback_enabled_checkbox.isChecked(),
+            coarse_fallback_sample_rate=int(self.coarse_fallback_sample_rate_input.value()),
+            coarse_fallback_min_peak_margin=float(self.coarse_fallback_min_peak_margin_input.value()),
+            coarse_fallback_max_duration_seconds=(None if max_duration_val <= 0.0 else max_duration_val),
+            coarse_fallback_max_memory_mb=float(self.coarse_fallback_max_memory_input.value()),
+            coarse_fallback_min_confidence=float(self.coarse_fallback_min_confidence_input.value()),
+            coarse_fallback_confidence_margin=float(self.coarse_fallback_confidence_margin_input.value()),
+            max_drift_search_radius_seconds=float(self.max_drift_search_radius_input.value()),
+            high_confidence_search_radius_seconds=float(self.high_confidence_search_radius_input.value()),
+            medium_confidence_search_radius_seconds=float(self.medium_confidence_search_radius_input.value()),
+            low_confidence_search_radius_seconds=float(self.low_confidence_search_radius_input.value()),
+            master_vad_filter_enabled=self.master_vad_filter_enabled_checkbox.isChecked(),
+            master_vad_min_overlap_ratio=float(self.master_vad_min_overlap_ratio_input.value()),
+            master_vad_padding_seconds=float(self.master_vad_padding_input.value()),
+            master_vad_uncertain_policy=str(self.master_vad_uncertain_policy_combo.currentData()),
+        )
+
     def _configure_path_input(self, widget: QWidget) -> None:
         """Make path fields wide and resizable with the window width.
 
@@ -810,6 +1033,7 @@ class MainWindow(QMainWindow):
         try:
             anchor_selection = self._build_anchor_selection_config()
             anchor_matching = self._build_anchor_matching_config()
+            initial_offset_safety = self._build_initial_offset_safety_config()
         except ValueError as exc:
             self._show_error(str(exc))
             return
@@ -835,6 +1059,7 @@ class MainWindow(QMainWindow):
             ),
             anchor_selection=anchor_selection,
             anchor_matching=anchor_matching,
+            initial_offset_safety=initial_offset_safety,
             verbose_report=self.verbose_report_checkbox.isChecked(),
         )
 

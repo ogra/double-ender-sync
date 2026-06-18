@@ -155,10 +155,10 @@ Print the installed version from the CLI with either long or short version flags
 ```bash
 double-ender-sync --version
 double-ender-sync -V
-# version 0.2.5
+# version 0.2.6
 ```
 
-The same version is exposed to Python callers through the package/API (`double_ender_sync.__version__` and `double_ender_sync.api.get_version()` both return `0.2.5`) and is shown in the GUI footer as `v0.2.5`.
+The same version is exposed to Python callers through the package/API (`double_ender_sync.__version__` and `double_ender_sync.api.get_version()` both return `0.2.6`) and is shown in the GUI footer as `v0.2.6`.
 
 ## Quick start
 
@@ -197,6 +197,24 @@ output/
 `sync-report.json` is an alignment diagnostics report. Its top-level metadata
 uses `report_type: "alignment_diagnostics"` and `schema_version: "1"`, followed
 by `analysis`, `master`, `tracks`, `warnings`, and `errors` sections.
+
+## Initial offset safety net
+
+The initial offset stage now includes a conservative safety net so the pipeline is less likely to start drift fitting from a wrong first alignment.
+
+- Primary path: anchor-based NCC (`estimation_method: "anchor_ncc"`).
+- Fallback path: coarse whole-recording FFT correlation (`estimation_method: "coarse_fft_fallback"`) when the anchor result is below the configured confidence gate.
+- Confidence policy: the selected estimate is classified into `high`, `medium`, `low`, or `failed` confidence bands.
+- Drift search policy: the confidence band selects the anchor-matching search radius for downstream drift fitting, capped by `--max-drift-search-radius-seconds`.
+- Master-side speech filter: optional master VAD overlap checks can reject anchor matches that land mostly in master silence.
+
+Every run now writes compact initial-offset diagnostics into each track entry of `sync-report.json`:
+
+- `initial_offset`: selected offset, confidence, `confidence_band`, estimation method, fallback decision, selected drift search radius, and serialized anchor/fallback diagnostics.
+- `initial_offset_safety_diagnostics`: the effective safety-net config, warning codes, and `master_vad_rejection_count`.
+- Track warnings can now include safety-net and master-VAD-related warnings such as `INITIAL_OFFSET_LOW_CONFIDENCE`, `COARSE_OFFSET_FALLBACK_USED`, and `MASTER_VAD_ANCHOR_REJECTED`.
+
+See [docs/initial-offset-safety-net.md](docs/initial-offset-safety-net.md) for the full option reference, the selection logic, and a field-by-field explanation of the new report output.
 
 ## Useful options
 
@@ -249,6 +267,26 @@ by `analysis`, `master`, `tracks`, `warnings`, and `errors` sections.
   Maximum allowed lag disagreement between NCC best peak and GCC-PHAT best peak before the agreement score degrades linearly to zero.
 - `--min-confidence-for-fit <confidence>` (default: `0.05`)
   Minimum composite anchor confidence (product of quality, uniqueness, sharpness, agreement, and anchor-level confidence) required for a match to be included in drift model fitting. Matches below this threshold are annotated with `excluded_by_min_confidence` and omitted from regression.
+- `--initial-offset-min-confidence <0.0-1.0>` (default: `0.50`)
+  Confidence gate for the primary anchor-based initial offset estimate. If the selected anchor estimate falls below this threshold and coarse fallback is enabled, the pipeline also runs a downsampled whole-recording FFT correlation pass before choosing the final initial offset.
+- `--coarse-fallback-enabled` / `--no-coarse-fallback` (default: enabled)
+  Toggle the coarse whole-recording FFT fallback used only for low-confidence initial offsets. Disable this if you want the pipeline to trust the anchor-only initial offset path even when confidence is weak.
+- `--coarse-fallback-sample-rate 8000` / `--coarse-fallback-max-duration-seconds none` / `--coarse-fallback-max-memory-mb 1024`
+  Control the coarse fallback cost envelope. The fallback downsamples both tracks to the configured sample rate, can optionally truncate very long recordings to a duration cap, and respects a soft FFT working-memory budget in MiB. When the fallback had to reduce memory usage or shorten the analyzed span, the report emits diagnostics such as `coarse_fallback_memory_limited` or `coarse_fallback_duration_capped`.
+- `--coarse-fallback-min-peak-margin 0.10` / `--coarse-fallback-min-confidence 0.50` / `--coarse-fallback-confidence-margin 0.15`
+  Acceptance gates for the coarse fallback result. The fallback is selected only when its own peak is sufficiently distinct, its confidence passes the configured minimum, and it is meaningfully better than the anchor estimate unless the anchor estimate is already in the `failed` band.
+- `--high-confidence-threshold 0.75` / `--medium-confidence-threshold 0.50` / `--low-confidence-threshold 0.25`
+  Define the confidence-band boundaries for the selected initial offset. These thresholds must satisfy `0 < low < medium < high < 1`, and `--initial-offset-min-confidence` must stay at or above the low threshold.
+- `--max-drift-search-radius-seconds 30.0`
+  Hard cap for the confidence-based drift-anchor search radius derived from the selected initial-offset confidence band.
+- `--high-confidence-search-radius-seconds 6.0` / `--medium-confidence-search-radius-seconds 12.0` / `--low-confidence-search-radius-seconds 20.0`
+  Per-band drift-anchor search radii. High-confidence offsets keep a narrow search, while lower-confidence offsets widen the drift-anchor matching window. The effective radius is always capped by `--max-drift-search-radius-seconds`.
+- `--master-vad-filter-enabled` / `--no-master-vad-filter` (default: enabled)
+  Toggle master-side speech-overlap filtering during drift-anchor matching. When enabled, matches that land in master regions with too little speech evidence are rejected before drift fitting.
+- `--master-vad-min-overlap-ratio 0.25` / `--master-vad-padding-seconds 0.25`
+  Configure how much master speech overlap a candidate match must have to survive the VAD filter, and how much padding to add around master speech segments before overlap testing.
+- `--master-vad-uncertain-policy {warn,skip,reject}`
+  Control behavior when master-side speech evidence is unavailable or inconclusive. `warn` keeps matching and emits diagnostics, `skip` silently bypasses the master-VAD gate for that condition, and `reject` treats uncertain master-VAD evidence as grounds to reject those matches.
 - `--drift-model {auto,linear,piecewise_linear,spline,kalman}`
   Select the drift model policy. The default `auto` keeps `LinearDrift` as the compatibility/control model while `--allow-nonlinear-drift` is disabled. `linear` always requests the linear control model. `piecewise_linear` and `spline` are experimental and require `--allow-nonlinear-drift`; `kalman` is research/experimental and is evaluated only when explicitly requested with `--allow-nonlinear-drift`. Piecewise fitting uses continuous segments, spline fitting uses monotonic cubic PCHIP interpolation through validated support knots, and Kalman fitting models offset/rate as noisy latent states smoothed across anchors. These richer models are accepted only when anchor coverage, residual improvement, monotonicity, and local-rate plausibility checks pass. Reports preserve legacy `offset_seconds` / `stretch_ratio` fields and add `model_type`, `model_version`, `model_selection_policy`, `model_parameters`, `breakpoints`, `segments`, `segment_residual_summaries`, `knots`, `knot_residual_summaries` with per-knot anchor counts and residual statistics, `fallback_reason`, `local_rate_summary`, and Kalman-specific `uncertainty_summary`, `covariance_summary`, `uncertainty_bands`, `state_points`, and `anchor_residuals_ms` diagnostics. The renderer API supports strictly monotonic, invertible `DriftModel` mappings; regions outside model support and detected internal master-time gaps are padded with silence and exposed in `global_correction.unsupported_regions`.
 - `--allow-nonlinear-drift`
@@ -305,7 +343,7 @@ The anchor matching pipeline computes NCC (Normalized Cross-Correlation) for eac
 
 The final confidence is the product of quality, uniqueness, sharpness, agreement, and the anchor's own confidence:
 
-```
+```text
 confidence = anchor_confidence * quality * uniqueness * sharpness * agreement
 ```
 
@@ -335,7 +373,7 @@ Anchor matches in `sync-report.json` now carry 13 additional diagnostic fields p
 
 The report also includes a per-track `anchor_matching` section with the full `AnchorMatchingConfig` used for the run (all NCC thresholds, GCC-PHAT settings, NMS exclusion, and min-confidence-for-fit), and verbose reports include `analysis.configuration_snapshot.anchor_matching` for top-level inspection. Default reports include the `anchor_matching` config in the per-track detail.
 
-For long recordings, see [Runtime tuning guide for long recordings](docs/runtime-tuning.md) for a report-driven process to reduce processing time while preserving alignment confidence.
+For long recordings, see [Runtime tuning guide for long recordings](docs/runtime-tuning.md) for a report-driven process to reduce processing time while preserving alignment confidence. For initial-offset fallback behavior and report interpretation, see [Initial offset safety net](docs/initial-offset-safety-net.md).
 
 ### VAD strategy selection guide (recommended trial order)
 
@@ -459,7 +497,13 @@ In addition to CLI usage, you can run the same pipeline from Python.
 ```python
 from pathlib import Path
 
-from double_ender_sync import AlignmentOptions, AnchorSelectionConfig, AnchorMatchingConfig, run_alignment
+from double_ender_sync import (
+    AlignmentOptions,
+    AnchorMatchingConfig,
+    AnchorSelectionConfig,
+    InitialOffsetSafetyConfig,
+    run_alignment,
+)
 
 options = AlignmentOptions(
     master=Path("input/master.wav"),
@@ -474,6 +518,17 @@ options = AlignmentOptions(
         ncc_min_margin=0.10,
         gcc_phat_enabled=True,
     ),
+    initial_offset_safety=InitialOffsetSafetyConfig(
+        initial_offset_min_confidence=0.50,
+        coarse_fallback_enabled=True,
+        coarse_fallback_sample_rate=8000,
+        coarse_fallback_max_memory_mb=1024.0,
+        high_confidence_search_radius_seconds=6.0,
+        medium_confidence_search_radius_seconds=12.0,
+        low_confidence_search_radius_seconds=20.0,
+        master_vad_filter_enabled=True,
+        master_vad_uncertain_policy="warn",
+    ),
     drift_model="auto",
     allow_nonlinear_drift=False,
     max_breakpoints=1,
@@ -487,7 +542,7 @@ if exit_code != 0:
     raise RuntimeError(f"alignment failed with exit code {exit_code}")
 ```
 
-`run_alignment(...)` returns the same exit code semantics as the CLI `main(...)`. Anchor-selection and drift-model options use the same shared configuration defaults as CLI and GUI runs; `drift_model="auto"` still resolves to the linear control path unless `allow_nonlinear_drift=True` is set explicitly.
+`run_alignment(...)` returns the same exit code semantics as the CLI `main(...)`. Anchor-selection, initial-offset safety, and drift-model options use the same shared configuration defaults as CLI and GUI runs; `drift_model="auto"` still resolves to the linear control path unless `allow_nonlinear_drift=True` is set explicitly. `InitialOffsetSafetyConfig` is validated before CLI argv generation, so invalid threshold ordering or unsupported policy combinations fail early for API callers too.
 
 ## Translation operations rules
 

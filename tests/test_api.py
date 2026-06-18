@@ -8,8 +8,8 @@ from double_ender_sync.analysis.vad import MODERN_PYANNOTE_SEGMENTATION_MODEL
 
 
 def test_api_exposes_package_version() -> None:
-    assert get_version() == "0.2.5"
-    assert double_ender_sync.__version__ == "0.2.5"
+    assert get_version() == "0.2.6"
+    assert double_ender_sync.__version__ == "0.2.6"
 
 
 def test_build_cli_argv_includes_required_fields() -> None:
@@ -364,3 +364,100 @@ def test_build_cli_argv_includes_anchor_matching_no_gcc_phat() -> None:
     assert "--gcc-phat-enabled" not in argv
     assert "--no-gcc-phat-ambiguous-only" in argv
     assert "--gcc-phat-only-when-ambiguous" not in argv
+
+
+def test_build_cli_argv_rejects_invalid_initial_offset_safety_config() -> None:
+    from double_ender_sync.config import InitialOffsetSafetyConfig
+
+    class InvalidSafetyConfig(InitialOffsetSafetyConfig):
+        def __post_init__(self) -> None:
+            pass  # bypass validation
+
+    invalid_safety = InvalidSafetyConfig(
+        initial_offset_min_confidence=0.1,  # below low_confidence_threshold (0.25)
+    )
+    options = AlignmentOptions(
+        master=Path("input/master.wav"),
+        tracks=[Path("input/speaker-a.wav")],
+        out=Path("output"),
+        initial_offset_safety=invalid_safety,
+    )
+
+    with pytest.raises(ValueError, match="initial_offset_min_confidence"):
+        build_cli_argv(options)
+
+
+def test_build_cli_argv_preserves_all_initial_offset_safety_options() -> None:
+    from double_ender_sync.cli import parse_args
+    from double_ender_sync.config import InitialOffsetSafetyConfig
+
+    custom_safety = InitialOffsetSafetyConfig(
+        initial_offset_min_confidence=0.55,
+        high_confidence_threshold=0.80,
+        medium_confidence_threshold=0.55,
+        low_confidence_threshold=0.30,
+        coarse_fallback_enabled=False,
+        coarse_fallback_sample_rate=4000,
+        coarse_fallback_min_peak_margin=0.15,
+        coarse_fallback_max_duration_seconds=120.0,
+        coarse_fallback_max_memory_mb=512.0,
+        coarse_fallback_min_confidence=0.60,
+        coarse_fallback_confidence_margin=0.20,
+        max_drift_search_radius_seconds=45.0,
+        high_confidence_search_radius_seconds=8.0,
+        medium_confidence_search_radius_seconds=15.0,
+        low_confidence_search_radius_seconds=25.0,
+        master_vad_filter_enabled=False,
+        master_vad_min_overlap_ratio=0.30,
+        master_vad_padding_seconds=0.35,
+        master_vad_uncertain_policy="reject",
+    )
+
+    options = AlignmentOptions(
+        master=Path("input/master.wav"),
+        tracks=[Path("input/speaker-a.wav")],
+        out=Path("output"),
+        initial_offset_safety=custom_safety,
+    )
+    argv = build_cli_argv(options)
+
+    # All safety fields must appear in argv so API values reach the CLI.
+    assert "--initial-offset-min-confidence" in argv
+    assert "--high-confidence-threshold" in argv
+    assert "--medium-confidence-threshold" in argv
+    assert "--low-confidence-threshold" in argv
+    assert "--coarse-fallback-sample-rate" in argv
+    assert "--coarse-fallback-min-peak-margin" in argv
+    assert "--coarse-fallback-max-duration-seconds" in argv
+    assert "--coarse-fallback-max-memory-mb" in argv
+    assert "--coarse-fallback-min-confidence" in argv
+    assert "--coarse-fallback-confidence-margin" in argv
+    assert "--max-drift-search-radius-seconds" in argv
+    assert "--high-confidence-search-radius-seconds" in argv
+    assert "--medium-confidence-search-radius-seconds" in argv
+    assert "--low-confidence-search-radius-seconds" in argv
+    assert "--master-vad-min-overlap-ratio" in argv
+    assert "--master-vad-padding-seconds" in argv
+    assert "--master-vad-uncertain-policy" in argv
+
+    # Round-trip through CLI parsing must preserve the customized values.
+    parsed = parse_args(argv)
+    assert parsed.initial_offset_min_confidence == pytest.approx(0.55)
+    assert parsed.high_confidence_threshold == pytest.approx(0.80)
+    assert parsed.medium_confidence_threshold == pytest.approx(0.55)
+    assert parsed.low_confidence_threshold == pytest.approx(0.30)
+    assert parsed.coarse_fallback_enabled is False
+    assert parsed.coarse_fallback_sample_rate == 4000
+    assert parsed.coarse_fallback_min_peak_margin == pytest.approx(0.15)
+    assert parsed.coarse_fallback_max_duration_seconds == pytest.approx(120.0)
+    assert parsed.coarse_fallback_max_memory_mb == pytest.approx(512.0)
+    assert parsed.coarse_fallback_min_confidence == pytest.approx(0.60)
+    assert parsed.coarse_fallback_confidence_margin == pytest.approx(0.20)
+    assert parsed.max_drift_search_radius_seconds == pytest.approx(45.0)
+    assert parsed.high_confidence_search_radius_seconds == pytest.approx(8.0)
+    assert parsed.medium_confidence_search_radius_seconds == pytest.approx(15.0)
+    assert parsed.low_confidence_search_radius_seconds == pytest.approx(25.0)
+    assert parsed.master_vad_filter_enabled is False
+    assert parsed.master_vad_min_overlap_ratio == pytest.approx(0.30)
+    assert parsed.master_vad_padding_seconds == pytest.approx(0.35)
+    assert parsed.master_vad_uncertain_policy == "reject"

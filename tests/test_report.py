@@ -119,6 +119,74 @@ def test_alignment_diagnostics_report_promotes_anchor_coverage_diagnostics_to_wa
     assert any(warning["code"] == "LONG_UNANCHORED_SPAN" for warning in report["warnings"])
 
 
+def test_alignment_diagnostics_report_promotes_master_vad_rejections_to_warnings() -> None:
+    master = _track("master")
+    speaker = _track("speaker-a")
+
+    report = build_alignment_diagnostics_report(
+        master=master,
+        tracks=[speaker],
+        analysis_sample_rate=16000,
+        language="en",
+        track_details={
+            "speaker-a": {
+                "drift_estimate": {
+                    "offset_seconds": 0.1,
+                    "stretch_ratio": 1.0,
+                    "anchor_count": 8,
+                    "residual_median_ms": 5.0,
+                    "residual_max_ms": 10.0,
+                },
+                "initial_offset_safety_diagnostics": {
+                    "master_vad_rejection_count": 3,
+                    "warnings": [],
+                },
+            }
+        },
+    )
+
+    track_warnings = report["tracks"][0]["warnings"]
+    assert any(
+        warning["code"] == "MASTER_VAD_ANCHOR_REJECTED" and "3" in warning["message"]
+        for warning in track_warnings
+    )
+
+
+def test_alignment_diagnostics_report_localizes_master_vad_warnings() -> None:
+    master = _track("master")
+    speaker = _track("speaker-a")
+
+    report = build_alignment_diagnostics_report(
+        master=master,
+        tracks=[speaker],
+        analysis_sample_rate=16000,
+        language="ja",
+        track_details={
+            "speaker-a": {
+                "drift_estimate": {
+                    "offset_seconds": 0.1,
+                    "stretch_ratio": 1.0,
+                    "anchor_count": 8,
+                    "residual_median_ms": 5.0,
+                    "residual_max_ms": 10.0,
+                },
+                "initial_offset_safety_diagnostics": {
+                    "master_vad_rejection_count": 2,
+                    "warnings": [],
+                },
+                "master_vad": {
+                    "filter_enabled": True,
+                    "speech_segment_summary": {"count": 0},
+                },
+            }
+        },
+    )
+
+    track_warnings = report["tracks"][0]["warnings"]
+    assert any(warning["code"] == "MASTER_VAD_ANCHOR_REJECTED" and "2 件" in warning["message"] for warning in track_warnings)
+    assert any(warning["code"] == "MASTER_VAD_NO_SPEECH_SEGMENTS" and "マスターVAD" in warning["message"] for warning in track_warnings)
+
+
 def test_alignment_diagnostics_report_promotes_drift_fit_distribution_diagnostics_to_warnings() -> None:
     master = _track("master")
     speaker = _track("speaker-a")

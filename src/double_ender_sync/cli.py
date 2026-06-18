@@ -6,13 +6,22 @@ import time
 from pathlib import Path
 
 from double_ender_sync._version import get_cli_version_text
-from double_ender_sync.alignment.offset import estimate_initial_offset
+from double_ender_sync.alignment.offset import estimate_initial_offset_with_safety_net
 from double_ender_sync.analysis.anchors import select_anchor_candidates_with_diagnostics
 from double_ender_sync.analysis.drift import match_anchors_for_drift, select_drift_model
-from double_ender_sync.analysis.vad import DEFAULT_PYANNOTE_MODEL, build_vad_strategy, detect_speech_segments
+from double_ender_sync.analysis.vad import DEFAULT_PYANNOTE_MODEL, SpeechSegment, build_vad_strategy, detect_speech_segments
 from double_ender_sync.audio.io import AudioLoadError, cleanup_temp_files, load_audio_track
 from double_ender_sync.audio.render import write_synced_track
-from double_ender_sync.config import DEFAULT_ANCHOR_MATCHING_CONFIG, DEFAULT_ANCHOR_SELECTION_CONFIG, DEFAULT_DRIFT_MODEL_CONFIG, AnchorMatchingConfig, AnchorSelectionConfig, DriftModelConfig
+from double_ender_sync.config import (
+    DEFAULT_ANCHOR_MATCHING_CONFIG,
+    DEFAULT_ANCHOR_SELECTION_CONFIG,
+    DEFAULT_DRIFT_MODEL_CONFIG,
+    DEFAULT_INITIAL_OFFSET_SAFETY_CONFIG,
+    AnchorMatchingConfig,
+    AnchorSelectionConfig,
+    DriftModelConfig,
+    InitialOffsetSafetyConfig,
+)
 from double_ender_sync.alignment.timeline import apply_global_time_correction
 from double_ender_sync.alignment.local_adjust import apply_local_adjustment
 from double_ender_sync.i18n.catalog import TranslationCatalog
@@ -154,6 +163,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--no-gcc-phat-ambiguous-only", dest="gcc_phat_only_when_ambiguous", action="store_false", help="Run GCC-PHAT for all matches")
     parser.add_argument("--gcc-phat-agreement-tolerance-seconds", type=float, default=DEFAULT_ANCHOR_MATCHING_CONFIG.gcc_phat_agreement_tolerance_seconds, help="Maximum allowed lag disagreement between NCC and GCC-PHAT peaks")
     parser.add_argument("--min-confidence-for-fit", type=float, default=DEFAULT_ANCHOR_MATCHING_CONFIG.min_confidence_for_fit, help="Minimum anchor confidence required for drift model fitting")
+    parser.add_argument("--initial-offset-min-confidence", type=float, default=DEFAULT_INITIAL_OFFSET_SAFETY_CONFIG.initial_offset_min_confidence, help="Confidence threshold below which the coarse FFT fallback is attempted")
+    parser.add_argument("--coarse-fallback-enabled", dest="coarse_fallback_enabled", action="store_true", default=DEFAULT_INITIAL_OFFSET_SAFETY_CONFIG.coarse_fallback_enabled, help="Enable coarse FFT fallback for low-confidence initial offsets")
+    parser.add_argument("--no-coarse-fallback", dest="coarse_fallback_enabled", action="store_false", default=DEFAULT_INITIAL_OFFSET_SAFETY_CONFIG.coarse_fallback_enabled, help="Disable coarse FFT fallback")
+    parser.add_argument("--coarse-fallback-sample-rate", type=int, default=DEFAULT_INITIAL_OFFSET_SAFETY_CONFIG.coarse_fallback_sample_rate, help="Sample rate for coarse FFT fallback correlation")
+    parser.add_argument("--coarse-fallback-min-peak-margin", type=float, default=DEFAULT_INITIAL_OFFSET_SAFETY_CONFIG.coarse_fallback_min_peak_margin, help="Minimum peak margin required to accept coarse fallback offset")
+    parser.add_argument("--coarse-fallback-max-duration-seconds", type=_parse_optional_positive_float, default=DEFAULT_INITIAL_OFFSET_SAFETY_CONFIG.coarse_fallback_max_duration_seconds, help="Optional duration cap for coarse fallback; use none/off/disabled to disable")
+    parser.add_argument("--coarse-fallback-max-memory-mb", type=float, default=DEFAULT_INITIAL_OFFSET_SAFETY_CONFIG.coarse_fallback_max_memory_mb, help="Soft memory budget in MiB for the coarse FFT fallback correlation")
+    parser.add_argument("--coarse-fallback-min-confidence", type=float, default=DEFAULT_INITIAL_OFFSET_SAFETY_CONFIG.coarse_fallback_min_confidence, help="Minimum confidence required for the coarse FFT fallback offset to be accepted")
+    parser.add_argument("--coarse-fallback-confidence-margin", type=float, default=DEFAULT_INITIAL_OFFSET_SAFETY_CONFIG.coarse_fallback_confidence_margin, help="Minimum confidence advantage over the anchor estimate required to select the coarse FFT fallback")
+    parser.add_argument("--high-confidence-threshold", type=float, default=DEFAULT_INITIAL_OFFSET_SAFETY_CONFIG.high_confidence_threshold, help="Lower bound of the high-confidence band used for reporting and drift search radius selection")
+    parser.add_argument("--medium-confidence-threshold", type=float, default=DEFAULT_INITIAL_OFFSET_SAFETY_CONFIG.medium_confidence_threshold, help="Lower bound of the medium-confidence band used for reporting and drift search radius selection")
+    parser.add_argument("--low-confidence-threshold", type=float, default=DEFAULT_INITIAL_OFFSET_SAFETY_CONFIG.low_confidence_threshold, help="Lower bound of the low-confidence band used for reporting and drift search radius selection")
+    parser.add_argument("--max-drift-search-radius-seconds", type=float, default=DEFAULT_INITIAL_OFFSET_SAFETY_CONFIG.max_drift_search_radius_seconds, help="Hard cap for confidence-based drift anchor search radius")
+    parser.add_argument("--high-confidence-search-radius-seconds", type=float, default=DEFAULT_INITIAL_OFFSET_SAFETY_CONFIG.high_confidence_search_radius_seconds, help="Drift search radius for high-confidence initial offsets")
+    parser.add_argument("--medium-confidence-search-radius-seconds", type=float, default=DEFAULT_INITIAL_OFFSET_SAFETY_CONFIG.medium_confidence_search_radius_seconds, help="Drift search radius for medium-confidence initial offsets")
+    parser.add_argument("--low-confidence-search-radius-seconds", type=float, default=DEFAULT_INITIAL_OFFSET_SAFETY_CONFIG.low_confidence_search_radius_seconds, help="Drift search radius for low-confidence initial offsets")
+    parser.add_argument("--master-vad-filter-enabled", dest="master_vad_filter_enabled", action="store_true", default=DEFAULT_INITIAL_OFFSET_SAFETY_CONFIG.master_vad_filter_enabled, help="Reject drift anchors whose matched master span has little speech overlap")
+    parser.add_argument("--no-master-vad-filter", dest="master_vad_filter_enabled", action="store_false", default=DEFAULT_INITIAL_OFFSET_SAFETY_CONFIG.master_vad_filter_enabled, help="Disable master VAD filtering")
+    parser.add_argument("--master-vad-min-overlap-ratio", type=float, default=DEFAULT_INITIAL_OFFSET_SAFETY_CONFIG.master_vad_min_overlap_ratio, help="Minimum speech overlap ratio for the matched master span")
+    parser.add_argument("--master-vad-padding-seconds", type=float, default=DEFAULT_INITIAL_OFFSET_SAFETY_CONFIG.master_vad_padding_seconds, help="Padding around master speech segments before overlap checks")
+    parser.add_argument("--master-vad-uncertain-policy", choices=["warn", "skip", "reject"], default=DEFAULT_INITIAL_OFFSET_SAFETY_CONFIG.master_vad_uncertain_policy, help="Behavior when master VAD is unavailable or inconclusive")
     parser.add_argument("--log-file", type=Path, default=None, help="Optional log file path (default: <out>/double-ender-sync.log)")
     parser.add_argument("--lang", type=str, default=None, help="UI/report language code (e.g. en, ja). Regional codes like en-US are normalized to en.")
     return parser.parse_args(argv)
@@ -276,8 +306,34 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
     except ValueError as exc:
         print(t("cli.error.invalid_anchor_matching", exc=exc), file=sys.stderr)
         return EXIT_USAGE_ERROR
+    try:
+        initial_offset_safety_config = InitialOffsetSafetyConfig(
+            initial_offset_min_confidence=args.initial_offset_min_confidence,
+            high_confidence_threshold=args.high_confidence_threshold,
+            medium_confidence_threshold=args.medium_confidence_threshold,
+            low_confidence_threshold=args.low_confidence_threshold,
+            coarse_fallback_enabled=args.coarse_fallback_enabled,
+            coarse_fallback_sample_rate=args.coarse_fallback_sample_rate,
+            coarse_fallback_min_peak_margin=args.coarse_fallback_min_peak_margin,
+            coarse_fallback_max_duration_seconds=args.coarse_fallback_max_duration_seconds,
+            coarse_fallback_max_memory_mb=args.coarse_fallback_max_memory_mb,
+            coarse_fallback_min_confidence=args.coarse_fallback_min_confidence,
+            coarse_fallback_confidence_margin=args.coarse_fallback_confidence_margin,
+            max_drift_search_radius_seconds=args.max_drift_search_radius_seconds,
+            high_confidence_search_radius_seconds=args.high_confidence_search_radius_seconds,
+            medium_confidence_search_radius_seconds=args.medium_confidence_search_radius_seconds,
+            low_confidence_search_radius_seconds=args.low_confidence_search_radius_seconds,
+            master_vad_filter_enabled=args.master_vad_filter_enabled,
+            master_vad_min_overlap_ratio=args.master_vad_min_overlap_ratio,
+            master_vad_padding_seconds=args.master_vad_padding_seconds,
+            master_vad_uncertain_policy=args.master_vad_uncertain_policy,
+        )
+    except ValueError as exc:
+        print(t("cli.error.invalid_initial_offset_safety", exc=exc), file=sys.stderr)
+        return EXIT_USAGE_ERROR
     anchor_selection_metadata = anchor_selection_config.as_dict()
     anchor_matching_metadata = anchor_matching_config.as_dict()
+    initial_offset_safety_metadata = initial_offset_safety_config.as_dict()
     drift_model_selection_metadata = drift_model_config.as_dict()
     configuration_snapshot = None
     if args.verbose_report:
@@ -285,6 +341,7 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
             "drift_model_selection": drift_model_selection_metadata,
             "anchor_selection": anchor_selection_metadata,
             "anchor_matching": anchor_matching_metadata,
+            "initial_offset_safety": initial_offset_safety_metadata,
         }
 
     selected_pyannote_model = args.pyannote_model or DEFAULT_PYANNOTE_MODEL
@@ -297,7 +354,7 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
     loaded_tracks = []
     total_tracks = len(args.track)
     progress = ProgressTracker(
-        total_units=(2 + (total_tracks * 8)),
+        total_units=(4 + (total_tracks * 8)),
         progress_callback=progress_callback,
         event_callback=event_callback,
     )
@@ -322,6 +379,23 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
     try:
         progress.update(f"Starting processing for {total_tracks} track(s)")
         vad_strategy = build_vad_strategy(args.vad_strategy, pyannote_model=selected_pyannote_model)
+        compute_master_vad = (
+            initial_offset_safety_config.master_vad_filter_enabled or args.verbose_report
+        )
+        master_speech_segments: list[SpeechSegment] | None = None
+        if compute_master_vad:
+            master_speech_segments = detect_speech_segments(
+                master.analysis_samples, sample_rate=args.analysis_sample_rate, vad_strategy=vad_strategy
+            )
+            LOGGER.debug(
+                "master: speech_segments=%d vad_filter_enabled=%s",
+                len(master_speech_segments),
+                initial_offset_safety_config.master_vad_filter_enabled,
+            )
+            progress.update("Master speech detection completed")
+        else:
+            LOGGER.debug("master: speech detection skipped (master VAD filter disabled)")
+            progress.update("Master speech detection skipped (master VAD filter disabled)")
         for track_path in args.track:
             LOGGER.info("Processing track: %s", track_path.name)
             try:
@@ -353,27 +427,51 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
             progress.update(f"{track.name}: anchor selection completed")
             LOGGER.debug("%s: starting initial offset estimation", track.name)
             offset_started = time.perf_counter()
-            offset_estimate = estimate_initial_offset(
+            offset_estimate = estimate_initial_offset_with_safety_net(
                 local_samples=track.analysis_samples,
                 master_samples=master.analysis_samples,
                 sample_rate=args.analysis_sample_rate,
                 anchors=anchor_candidates,
+                safety_config=initial_offset_safety_config,
             )
             LOGGER.debug("%s: finished initial offset estimation elapsed=%.3fs", track.name, time.perf_counter() - offset_started)
             progress.update(f"{track.name}: initial offset estimation completed")
 
             drift_matches = []
             drift_estimate = None
-            if offset_estimate is not None and anchor_candidates:
-                LOGGER.debug("%s: initial_offset_seconds=%.6f", track.name, offset_estimate.offset_seconds)
+            usable_for_drift = (
+                offset_estimate is not None
+                and offset_estimate.radius_reason != "no_usable_initial_estimate"
+            )
+            if usable_for_drift and anchor_candidates:
+                search_radius = offset_estimate.selected_drift_search_radius_seconds
+                if search_radius is None:
+                    search_radius = initial_offset_safety_config.high_confidence_search_radius_seconds
+                LOGGER.debug(
+                    "%s: initial_offset_seconds=%.6f confidence_band=%s radius=%.3fs radius_reason=%s",
+                    track.name,
+                    offset_estimate.offset_seconds,
+                    offset_estimate.confidence_band,
+                    search_radius,
+                    offset_estimate.radius_reason,
+                )
                 drift_matches = match_anchors_for_drift(
                     local_samples=track.analysis_samples,
                     master_samples=master.analysis_samples,
                     sample_rate=args.analysis_sample_rate,
                     anchors=anchor_candidates,
                     initial_offset_seconds=offset_estimate.offset_seconds,
+                    search_radius_seconds=search_radius,
                     matching_config=anchor_matching_config,
+                    master_speech_segments=master_speech_segments,
+                    safety_config=initial_offset_safety_config,
                 )
+                master_vad_rejection_count = sum(
+                    1
+                    for match in drift_matches
+                    if match.rejected_reason in {"master_vad_no_overlap", "master_vad_low_overlap_ratio"}
+                )
+                offset_estimate.master_vad_rejection_count = master_vad_rejection_count
                 LOGGER.debug("%s: completed drift anchor matching", track.name)
                 drift_estimate = select_drift_model(drift_matches, drift_model_config, local_duration_seconds=track.duration_seconds, matching_config=anchor_matching_config)
                 LOGGER.debug("%s: drift_matches=%d drift_estimated=%s", track.name, len(drift_matches), drift_estimate is not None)
@@ -446,11 +544,23 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
                 LOGGER.warning("%s: skipped global correction due to missing drift estimate", track.name)
                 progress.update(f"{track.name}: rendering skipped (insufficient drift estimate)", step_units=2)
 
+            safety_warnings = list(offset_estimate.warnings) if offset_estimate is not None else []
+            if (
+                initial_offset_safety_config.master_vad_filter_enabled
+                and (not master_speech_segments)
+                and initial_offset_safety_config.master_vad_uncertain_policy == "warn"
+            ):
+                safety_warnings.append("master_vad_unavailable")
             track_details[track.name] = {
                 "speech_segments": serialize_segments(speech_segments),
                 "anchor_candidates": serialize_anchors(anchor_candidates),
                 "anchor_selection_diagnostics": serialize_anchor_selection_diagnostics(anchor_selection_result.diagnostics),
                 "initial_offset": serialize_offset(offset_estimate),
+                "initial_offset_safety_diagnostics": {
+                    "config": initial_offset_safety_metadata,
+                    "warnings": safety_warnings,
+                    "master_vad_rejection_count": offset_estimate.master_vad_rejection_count if offset_estimate is not None else None,
+                },
                 "drift_anchor_matches": serialize_anchor_matches(drift_matches),
                 "drift_fit_diagnostics": serialize_drift_fit_diagnostics(None if drift_estimate is None else drift_estimate.diagnostics),
                 "drift_estimate": serialize_drift_estimate(drift_estimate),
@@ -486,8 +596,16 @@ def main(argv: list[str] | None = None, progress_callback=None, event_callback=N
                     "pyannote_model": selected_pyannote_model if args.vad_strategy == "pyannote" else None,
                 },
                 "anchor_selection": anchor_selection_metadata,
+                "master_vad": None if master_speech_segments is None else {
+                    "strategy": args.vad_strategy,
+                    "pyannote_model": selected_pyannote_model if args.vad_strategy == "pyannote" else None,
+                    "speech_segments": serialize_segments(master_speech_segments),
+                    "speech_segment_summary": {"count": len(master_speech_segments)},
+                    "filter_enabled": initial_offset_safety_config.master_vad_filter_enabled,
+                },
                 "anchor_matching": anchor_matching_metadata,
                 "drift_model_selection": drift_model_selection_metadata,
+                "initial_offset_safety": initial_offset_safety_metadata,
                 "local_adjustment": None if local_adjustment is None else {
                     "events": [
                         {

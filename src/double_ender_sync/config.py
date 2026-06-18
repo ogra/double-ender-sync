@@ -11,6 +11,114 @@ SplineKnotSource = Literal["auto", "piecewise_boundaries", "anchors"]
 DriftModelName = Literal["auto", "linear", "piecewise_linear", "spline", "kalman"]
 
 
+MasterVadUncertainPolicy = Literal["warn", "skip", "reject"]
+
+
+@dataclass(frozen=True)
+class InitialOffsetSafetyConfig:
+    """Configuration for the initial-offset safety net.
+
+    The safety net makes initial offset estimation more resilient by adding a
+    coarse whole-recording FFT fallback for low-confidence anchor estimates,
+    widening drift-anchor searches when confidence is medium/low, and using
+    master-side speech evidence to avoid matching local speech into master
+    silence.
+    """
+
+    initial_offset_min_confidence: float = 0.50
+    high_confidence_threshold: float = 0.75
+    medium_confidence_threshold: float = 0.50
+    low_confidence_threshold: float = 0.25
+
+    coarse_fallback_enabled: bool = True
+    coarse_fallback_sample_rate: int = 8000
+    coarse_fallback_min_peak_margin: float = 0.10
+    coarse_fallback_max_duration_seconds: float | None = None
+    coarse_fallback_max_memory_mb: float = 1024.0
+    coarse_fallback_min_confidence: float = 0.50
+    coarse_fallback_confidence_margin: float = 0.15
+
+    max_drift_search_radius_seconds: float = 30.0
+    high_confidence_search_radius_seconds: float = 6.0
+    medium_confidence_search_radius_seconds: float = 12.0
+    low_confidence_search_radius_seconds: float = 20.0
+
+    master_vad_filter_enabled: bool = True
+    master_vad_min_overlap_ratio: float = 0.25
+    master_vad_padding_seconds: float = 0.25
+    master_vad_uncertain_policy: MasterVadUncertainPolicy = "warn"
+
+    def __post_init__(self) -> None:
+        if not (0.0 < self.low_confidence_threshold < self.medium_confidence_threshold < self.high_confidence_threshold < 1.0):
+            raise ValueError(
+                "confidence thresholds must satisfy 0 < low < medium < high < 1"
+            )
+        if not (0.0 <= self.initial_offset_min_confidence <= 1.0):
+            raise ValueError("initial_offset_min_confidence must be in [0.0, 1.0]")
+        if self.initial_offset_min_confidence < self.low_confidence_threshold:
+            raise ValueError(
+                "initial_offset_min_confidence must be >= low_confidence_threshold"
+            )
+        if not (0.0 <= self.coarse_fallback_min_peak_margin <= 1.0):
+            raise ValueError("coarse_fallback_min_peak_margin must be in [0.0, 1.0]")
+        if self.coarse_fallback_sample_rate <= 0:
+            raise ValueError("coarse_fallback_sample_rate must be positive")
+        if self.coarse_fallback_max_duration_seconds is not None and (
+            not isfinite(self.coarse_fallback_max_duration_seconds)
+            or self.coarse_fallback_max_duration_seconds <= 0.0
+        ):
+            raise ValueError(
+                "coarse_fallback_max_duration_seconds must be None or a positive finite value"
+            )
+        if not isfinite(self.coarse_fallback_max_memory_mb) or self.coarse_fallback_max_memory_mb <= 0.0:
+            raise ValueError("coarse_fallback_max_memory_mb must be finite and positive")
+        if not (0.0 <= self.coarse_fallback_min_confidence <= 1.0):
+            raise ValueError("coarse_fallback_min_confidence must be in [0.0, 1.0]")
+        if not (0.0 <= self.coarse_fallback_confidence_margin <= 1.0):
+            raise ValueError("coarse_fallback_confidence_margin must be in [0.0, 1.0]")
+        if not isfinite(self.max_drift_search_radius_seconds) or self.max_drift_search_radius_seconds <= 0.0:
+            raise ValueError("max_drift_search_radius_seconds must be finite and positive")
+        for name, value in (
+            ("high_confidence_search_radius_seconds", self.high_confidence_search_radius_seconds),
+            ("medium_confidence_search_radius_seconds", self.medium_confidence_search_radius_seconds),
+            ("low_confidence_search_radius_seconds", self.low_confidence_search_radius_seconds),
+        ):
+            if not isfinite(value) or value <= 0.0:
+                raise ValueError(f"{name} must be finite and positive")
+        # The configured radii are policy defaults; the effective radius is
+        # always capped at max_drift_search_radius_seconds, so the individual
+        # values do not need to be ordered relative to each other.
+        if not (0.0 <= self.master_vad_min_overlap_ratio <= 1.0):
+            raise ValueError("master_vad_min_overlap_ratio must be in [0.0, 1.0]")
+        if not isfinite(self.master_vad_padding_seconds) or self.master_vad_padding_seconds < 0.0:
+            raise ValueError("master_vad_padding_seconds must be finite and non-negative")
+        if self.master_vad_uncertain_policy not in {"warn", "skip", "reject"}:
+            raise ValueError("master_vad_uncertain_policy must be one of: warn, skip, reject")
+
+    def as_dict(self) -> dict[str, float | bool | int | str | None]:
+        return {
+            "initial_offset_min_confidence": self.initial_offset_min_confidence,
+            "high_confidence_threshold": self.high_confidence_threshold,
+            "medium_confidence_threshold": self.medium_confidence_threshold,
+            "low_confidence_threshold": self.low_confidence_threshold,
+            "coarse_fallback_enabled": self.coarse_fallback_enabled,
+            "coarse_fallback_sample_rate": self.coarse_fallback_sample_rate,
+            "coarse_fallback_min_peak_margin": self.coarse_fallback_min_peak_margin,
+            "coarse_fallback_max_duration_seconds": self.coarse_fallback_max_duration_seconds,
+            "coarse_fallback_max_memory_mb": self.coarse_fallback_max_memory_mb,
+            "coarse_fallback_min_confidence": self.coarse_fallback_min_confidence,
+            "coarse_fallback_confidence_margin": self.coarse_fallback_confidence_margin,
+            "max_drift_search_radius_seconds": self.max_drift_search_radius_seconds,
+            "high_confidence_search_radius_seconds": self.high_confidence_search_radius_seconds,
+            "medium_confidence_search_radius_seconds": self.medium_confidence_search_radius_seconds,
+            "low_confidence_search_radius_seconds": self.low_confidence_search_radius_seconds,
+            "master_vad_filter_enabled": self.master_vad_filter_enabled,
+            "master_vad_min_overlap_ratio": self.master_vad_min_overlap_ratio,
+            "master_vad_padding_seconds": self.master_vad_padding_seconds,
+            "master_vad_uncertain_policy": self.master_vad_uncertain_policy,
+        }
+
+
 @dataclass(frozen=True)
 class DriftModelConfig:
     """Shared drift-model selection policy for CLI, API, and GUI runs.
@@ -326,3 +434,4 @@ class AnchorMatchingConfig:
 DEFAULT_ANCHOR_SELECTION_CONFIG = AnchorSelectionConfig()
 DEFAULT_DRIFT_MODEL_CONFIG = DriftModelConfig()
 DEFAULT_ANCHOR_MATCHING_CONFIG = AnchorMatchingConfig()
+DEFAULT_INITIAL_OFFSET_SAFETY_CONFIG = InitialOffsetSafetyConfig()

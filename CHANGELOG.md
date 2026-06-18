@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.6] - 2026-06-18
+
+### Changed
+
+- More resilient initial offset estimation
+- Drift anchor search radius now depends on initial-estimate confidence
+- Applied VAD to the master recording and now reject local anchors whose expected master search region collides only with silence
+
+### Added
+
+- Added a coarse-search fallback for low-confidence initial estimates
+- Downsampled full-recording FFT cross-correlation only for initial offset fallback
+
 ## [0.2.5] - 2026-05-29
 
 ### Changed

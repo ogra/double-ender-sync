@@ -12,6 +12,7 @@ from double_ender_sync.config import (
     DEFAULT_ANCHOR_MATCHING_CONFIG,
     DEFAULT_ANCHOR_SELECTION_CONFIG,
     DEFAULT_DRIFT_MODEL_CONFIG,
+    DEFAULT_INITIAL_OFFSET_SAFETY_CONFIG,
 )
 from double_ender_sync.gui import AlignmentWorker, MainWindow, extract_audio_paths
 
@@ -151,7 +152,7 @@ def test_gui_displays_package_version_in_corner() -> None:
     _app()
     window = MainWindow(lang="en")
 
-    assert window.version_label.text() == "v0.2.5"
+    assert window.version_label.text() == "v0.2.6"
     assert window.version_label.alignment() & Qt.AlignRight
     assert window.version_label.alignment() & Qt.AlignBottom
 
@@ -526,6 +527,7 @@ def test_gui_advanced_tabs_present_in_expected_order() -> None:
         "Drift model",
         "Anchor selection",
         "Anchor matching",
+        "Initial offset safety",
     ]
 
 
@@ -678,3 +680,204 @@ def test_gui_forwards_custom_anchor_matching_values(monkeypatch, tmp_path) -> No
     argv = build_cli_argv(options)
     assert "--ncc-min-score" in argv
     assert "--no-gcc-phat" in argv
+
+
+# --- Initial offset safety GUI tests ---
+
+
+def test_gui_initial_offset_safety_tab_present() -> None:
+    _app()
+    window = MainWindow(lang="en")
+    last_index = window.advanced_tabs.count() - 1
+    assert window.advanced_tabs.tabText(last_index) == window.catalog.t("gui.tab.initial_offset_safety")
+
+
+def test_gui_initial_offset_safety_defaults_match_shared_config(monkeypatch, tmp_path) -> None:
+    _app()
+    window = MainWindow(lang="en")
+    options = _capture_alignment_options_from_window(window, tmp_path, monkeypatch)
+    assert options.initial_offset_safety == DEFAULT_INITIAL_OFFSET_SAFETY_CONFIG
+
+
+def test_gui_coarse_fallback_enabled_gates_dependent_inputs() -> None:
+    _app()
+    window = MainWindow(lang="en")
+
+    assert window.coarse_fallback_enabled_checkbox.isChecked() is True
+    assert window.coarse_fallback_sample_rate_input.isEnabled() is True
+    assert window.coarse_fallback_min_peak_margin_input.isEnabled() is True
+    assert window.coarse_fallback_max_duration_input.isEnabled() is True
+    assert window.coarse_fallback_max_memory_input.isEnabled() is True
+    assert window.coarse_fallback_min_confidence_input.isEnabled() is True
+    assert window.coarse_fallback_confidence_margin_input.isEnabled() is True
+
+    window.coarse_fallback_enabled_checkbox.setChecked(False)
+
+    assert window.coarse_fallback_sample_rate_input.isEnabled() is False
+    assert window.coarse_fallback_min_peak_margin_input.isEnabled() is False
+    assert window.coarse_fallback_max_duration_input.isEnabled() is False
+    assert window.coarse_fallback_max_memory_input.isEnabled() is False
+    assert window.coarse_fallback_min_confidence_input.isEnabled() is False
+    assert window.coarse_fallback_confidence_margin_input.isEnabled() is False
+
+    window.coarse_fallback_enabled_checkbox.setChecked(True)
+
+    assert window.coarse_fallback_sample_rate_input.isEnabled() is True
+    assert window.coarse_fallback_min_peak_margin_input.isEnabled() is True
+    assert window.coarse_fallback_max_duration_input.isEnabled() is True
+    assert window.coarse_fallback_max_memory_input.isEnabled() is True
+    assert window.coarse_fallback_min_confidence_input.isEnabled() is True
+    assert window.coarse_fallback_confidence_margin_input.isEnabled() is True
+
+
+def test_gui_master_vad_filter_enabled_gates_dependent_inputs() -> None:
+    _app()
+    window = MainWindow(lang="en")
+
+    assert window.master_vad_filter_enabled_checkbox.isChecked() is True
+    assert window.master_vad_min_overlap_ratio_input.isEnabled() is True
+    assert window.master_vad_padding_input.isEnabled() is True
+    assert window.master_vad_uncertain_policy_combo.isEnabled() is True
+
+    window.master_vad_filter_enabled_checkbox.setChecked(False)
+
+    assert window.master_vad_min_overlap_ratio_input.isEnabled() is False
+    assert window.master_vad_padding_input.isEnabled() is False
+    assert window.master_vad_uncertain_policy_combo.isEnabled() is False
+
+    window.master_vad_filter_enabled_checkbox.setChecked(True)
+
+    assert window.master_vad_min_overlap_ratio_input.isEnabled() is True
+    assert window.master_vad_padding_input.isEnabled() is True
+    assert window.master_vad_uncertain_policy_combo.isEnabled() is True
+
+
+def test_gui_initial_offset_safety_config_roundtrip(monkeypatch, tmp_path) -> None:
+    _app()
+    window = MainWindow(lang="en")
+
+    window.initial_offset_min_confidence_input.setValue(0.55)
+    window.high_confidence_threshold_input.setValue(0.80)
+    window.medium_confidence_threshold_input.setValue(0.55)
+    window.low_confidence_threshold_input.setValue(0.30)
+    window.coarse_fallback_enabled_checkbox.setChecked(True)
+    window.coarse_fallback_sample_rate_input.setValue(16000)
+    window.coarse_fallback_min_peak_margin_input.setValue(0.15)
+    window.coarse_fallback_max_duration_input.setValue(0.0)
+    window.coarse_fallback_max_memory_input.setValue(2048.0)
+    window.coarse_fallback_min_confidence_input.setValue(0.60)
+    window.coarse_fallback_confidence_margin_input.setValue(0.20)
+    window.max_drift_search_radius_input.setValue(45.0)
+    window.high_confidence_search_radius_input.setValue(8.0)
+    window.medium_confidence_search_radius_input.setValue(15.0)
+    window.low_confidence_search_radius_input.setValue(25.0)
+    window.master_vad_filter_enabled_checkbox.setChecked(True)
+    window.master_vad_min_overlap_ratio_input.setValue(0.30)
+    window.master_vad_padding_input.setValue(0.50)
+    window.master_vad_uncertain_policy_combo.setCurrentIndex(
+        window.master_vad_uncertain_policy_combo.findData("skip")
+    )
+
+    options = _capture_alignment_options_from_window(window, tmp_path, monkeypatch)
+    config = options.initial_offset_safety
+
+    assert config.initial_offset_min_confidence == 0.55
+    assert config.high_confidence_threshold == 0.80
+    assert config.medium_confidence_threshold == 0.55
+    assert config.low_confidence_threshold == 0.30
+    assert config.coarse_fallback_enabled is True
+    assert config.coarse_fallback_sample_rate == 16000
+    assert config.coarse_fallback_min_peak_margin == 0.15
+    assert config.coarse_fallback_max_duration_seconds is None
+    assert config.coarse_fallback_max_memory_mb == 2048.0
+    assert config.coarse_fallback_min_confidence == 0.60
+    assert config.coarse_fallback_confidence_margin == 0.20
+    assert config.max_drift_search_radius_seconds == 45.0
+    assert config.high_confidence_search_radius_seconds == 8.0
+    assert config.medium_confidence_search_radius_seconds == 15.0
+    assert config.low_confidence_search_radius_seconds == 25.0
+    assert config.master_vad_filter_enabled is True
+    assert config.master_vad_min_overlap_ratio == 0.30
+    assert config.master_vad_padding_seconds == 0.50
+    assert config.master_vad_uncertain_policy == "skip"
+
+    argv = build_cli_argv(options)
+    assert "--initial-offset-min-confidence" in argv
+    assert "--high-confidence-threshold" in argv
+    assert "--coarse-fallback-sample-rate" in argv
+    assert "--master-vad-filter-enabled" in argv
+    assert "--master-vad-uncertain-policy" in argv
+    assert "skip" in argv
+
+
+def test_gui_coarse_fallback_max_duration_none_mapping() -> None:
+    _app()
+    window = MainWindow(lang="en")
+
+    window.coarse_fallback_max_duration_input.setValue(0.0)
+    assert window.coarse_fallback_max_duration_input.specialValueText() == "Unlimited"
+
+    config = window._build_initial_offset_safety_config()
+    assert config.coarse_fallback_max_duration_seconds is None
+
+    window.coarse_fallback_max_duration_input.setValue(3600.0)
+    config = window._build_initial_offset_safety_config()
+    assert config.coarse_fallback_max_duration_seconds == 3600.0
+
+
+def test_gui_confidence_threshold_ordering_enforced() -> None:
+    _app()
+    window = MainWindow(lang="en")
+
+    window.low_confidence_threshold_input.setValue(0.30)
+    window.medium_confidence_threshold_input.setValue(0.60)
+    window.high_confidence_threshold_input.setValue(0.85)
+
+    assert window.low_confidence_threshold_input.value() < window.medium_confidence_threshold_input.value()
+    assert window.medium_confidence_threshold_input.value() < window.high_confidence_threshold_input.value()
+    assert window.initial_offset_min_confidence_input.minimum() == window.low_confidence_threshold_input.value()
+
+
+def test_gui_initial_offset_safety_vad_policy_combo_data() -> None:
+    _app()
+    window = MainWindow(lang="en")
+
+    values = [
+        window.master_vad_uncertain_policy_combo.itemData(i)
+        for i in range(window.master_vad_uncertain_policy_combo.count())
+    ]
+    assert values == ["warn", "skip", "reject"]
+    assert window.master_vad_uncertain_policy_combo.currentData() == "warn"
+
+
+def test_gui_initial_offset_safety_verbose_report_roundtrip(monkeypatch, tmp_path) -> None:
+    _app()
+    window = MainWindow(lang="en")
+    window.verbose_report_checkbox.setChecked(True)
+
+    options = _capture_alignment_options_from_window(window, tmp_path, monkeypatch)
+    assert options.verbose_report is True
+    argv = build_cli_argv(options)
+    assert "--verbose-report" in argv
+
+
+def test_gui_initial_offset_safety_disabled_coarse_fallback_roundtrip(monkeypatch, tmp_path) -> None:
+    _app()
+    window = MainWindow(lang="en")
+    window.coarse_fallback_enabled_checkbox.setChecked(False)
+
+    options = _capture_alignment_options_from_window(window, tmp_path, monkeypatch)
+    assert options.initial_offset_safety.coarse_fallback_enabled is False
+    argv = build_cli_argv(options)
+    assert "--no-coarse-fallback" in argv
+
+
+def test_gui_initial_offset_safety_disabled_master_vad_roundtrip(monkeypatch, tmp_path) -> None:
+    _app()
+    window = MainWindow(lang="en")
+    window.master_vad_filter_enabled_checkbox.setChecked(False)
+
+    options = _capture_alignment_options_from_window(window, tmp_path, monkeypatch)
+    assert options.initial_offset_safety.master_vad_filter_enabled is False
+    argv = build_cli_argv(options)
+    assert "--no-master-vad-filter" in argv

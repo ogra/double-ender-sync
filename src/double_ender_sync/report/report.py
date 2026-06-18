@@ -243,12 +243,42 @@ def _build_track_alignment_report(track: AudioTrack, detail: dict, catalog: Tran
     for local_warning in local_adjustment.get("warnings", []):
         warnings.append(_issue(track.name, "warning", "LOCAL_ADJUST", local_warning))
 
+    initial_offset_safety_diagnostics = detail.get("initial_offset_safety_diagnostics") or {}
+    for safety_warning in initial_offset_safety_diagnostics.get("warnings", []):
+        readable_message = safety_warning.replace("_", " ")
+        warnings.append(_issue(track.name, "warning", safety_warning.upper(), readable_message))
+
+    master_vad_rejection_count = initial_offset_safety_diagnostics.get("master_vad_rejection_count")
+    if isinstance(master_vad_rejection_count, int) and master_vad_rejection_count > 0:
+        warnings.append(
+            _issue(
+                track.name,
+                "warning",
+                "MASTER_VAD_ANCHOR_REJECTED",
+                catalog.t(
+                    "warnings.master_vad_anchor_rejected",
+                    count=master_vad_rejection_count,
+                ),
+            )
+        )
+
+    master_vad = detail.get("master_vad") or {}
+    if master_vad.get("speech_segment_summary", {}).get("count", 0) == 0 and master_vad.get("filter_enabled"):
+        warnings.append(
+            _issue(
+                track.name,
+                "warning",
+                "MASTER_VAD_NO_SPEECH_SEGMENTS",
+                catalog.t("warnings.master_vad_no_speech_segments"),
+            )
+        )
+
     data["warnings"] = _deduplicate_issues(warnings)
     data["errors"] = _deduplicate_issues(errors)
     return data
 
 
-_DEFAULT_TRACK_DETAIL_KEYS = ("initial_offset", "global_correction", "vad", "anchor_selection", "anchor_matching", "drift_model_selection")
+_DEFAULT_TRACK_DETAIL_KEYS = ("initial_offset", "global_correction", "vad", "anchor_selection", "anchor_matching", "drift_model_selection", "initial_offset_safety_diagnostics")
 _VERBOSE_TRACK_DETAIL_KEYS = (
     "speech_segments",
     "anchor_candidates",
@@ -257,6 +287,8 @@ _VERBOSE_TRACK_DETAIL_KEYS = (
     "drift_fit_diagnostics",
     "drift_estimate",
     "local_adjustment",
+    "master_vad",
+    "initial_offset_safety_diagnostics",
 )
 
 
@@ -273,6 +305,14 @@ def _copy_default_track_detail_fields(data: dict, detail: dict) -> None:
         data["anchor_candidate_summary"] = _count_summary(detail["anchor_candidates"])
     if "drift_anchor_matches" in detail:
         data["drift_anchor_match_summary"] = _anchor_match_summary(detail["drift_anchor_matches"])
+    if "master_vad" in detail:
+        master_vad = detail["master_vad"]
+        if isinstance(master_vad, dict):
+            if "speech_segment_summary" in master_vad:
+                data["master_vad_summary"] = master_vad["speech_segment_summary"]
+            else:
+                data["master_vad_summary"] = _count_summary(master_vad.get("speech_segments", []))
+            data["master_vad_filter_enabled"] = master_vad.get("filter_enabled")
     if "anchor_selection_diagnostics" in detail:
         data["anchor_selection_summary"] = _anchor_selection_summary(detail["anchor_selection_diagnostics"])
     if "drift_fit_diagnostics" in detail:
@@ -542,13 +582,38 @@ def serialize_anchor_selection_diagnostics(diagnostics: AnchorSelectionDiagnosti
 def serialize_offset(offset: OffsetEstimate | None) -> dict | None:
     if offset is None:
         return None
-    return {
+    data: dict = {
         "offset_seconds": offset.offset_seconds,
         "confidence": offset.confidence,
         "local_anchor_start": offset.local_anchor_start,
         "master_anchor_start": offset.master_anchor_start,
         "score": offset.score,
     }
+    if offset.estimation_method is not None:
+        data["estimation_method"] = offset.estimation_method
+    if offset.confidence_band is not None:
+        data["confidence_band"] = offset.confidence_band
+    data["fallback_attempted"] = offset.fallback_attempted
+    data["fallback_selected"] = offset.fallback_selected
+    if offset.fallback_reason is not None:
+        data["fallback_reason"] = offset.fallback_reason
+    if offset.initial_offset_confidence_threshold is not None:
+        data["initial_offset_confidence_threshold"] = offset.initial_offset_confidence_threshold
+    if offset.selected_drift_search_radius_seconds is not None:
+        data["selected_drift_search_radius_seconds"] = offset.selected_drift_search_radius_seconds
+    if offset.max_drift_search_radius_seconds is not None:
+        data["max_drift_search_radius_seconds"] = offset.max_drift_search_radius_seconds
+    if offset.radius_reason is not None:
+        data["radius_reason"] = offset.radius_reason
+    if offset.anchor_ncc is not None:
+        data["anchor_ncc"] = offset.anchor_ncc
+    if offset.coarse_fft_fallback is not None:
+        data["coarse_fft_fallback"] = offset.coarse_fft_fallback
+    if offset.master_vad_rejection_count is not None:
+        data["master_vad_rejection_count"] = offset.master_vad_rejection_count
+    if offset.warnings:
+        data["warnings"] = offset.warnings
+    return data
 
 
 def serialize_anchor_matches(matches: list[AnchorMatch]) -> list[dict]:

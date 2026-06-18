@@ -21,7 +21,7 @@ def test_cli_prints_version(capsys) -> None:
 
     assert exc_info.value.code == 0
     captured = capsys.readouterr()
-    assert captured.out.strip() == "version 0.2.5"
+    assert captured.out.strip() == "version 0.2.6"
 
 
 def test_cli_prints_version_with_short_flag(capsys) -> None:
@@ -30,7 +30,7 @@ def test_cli_prints_version_with_short_flag(capsys) -> None:
 
     assert exc_info.value.code == 0
     captured = capsys.readouterr()
-    assert captured.out.strip() == "version 0.2.5"
+    assert captured.out.strip() == "version 0.2.6"
 
 
 def test_cli_generates_sync_report(tmp_path: Path) -> None:

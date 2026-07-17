@@ -42,7 +42,7 @@ all = [
   "silero-vad>=5.1",
   "webrtcvad-wheels>=2.0.14",
   "pyannote.audio>=4.0.4,<5",
-  "torch==2.11.0",
+  "torch==2.13.0",
   "torchaudio==2.11.0",
   "torchcodec>=0.11.1,<0.12",
 ]
@@ -70,7 +70,7 @@ vad-ml = [
 ]
 vad-pyannote = [
   "pyannote.audio>=4.0.4,<5",
-  "torch==2.11.0",
+  "torch==2.13.0",
   "torchaudio==2.11.0",
   "torchcodec>=0.11.1,<0.12",
 ]

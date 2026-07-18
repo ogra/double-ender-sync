@@ -85,7 +85,7 @@ It also handles argument validation, progress updates, logging, and top-level er
   - Verifies optional `webrtcvad-wheels` installation (`vad-ml` extra)
   - Resamples to WebRTC-supported rates as needed and applies frame-based speech decisions
 - `pyannote`:
-  - Verifies optional `pyannote.audio` installation and model/runtime accessibility; the `vad-pyannote` extra targets the current Python 3.14-compatible stack (`pyannote.audio>=4.0.4,<5`, `torch==2.11.0`, `torchaudio==2.11.0`, `torchcodec>=0.11.1,<0.12`).
+  - Verifies optional `pyannote.audio` installation and model/runtime accessibility; the `vad-pyannote` extra targets the current Python 3.14-compatible stack (`pyannote.audio>=4.0.4,<5`, `torch==2.13.0`, `torchaudio==2.11.0`, `torchcodec>=0.11.1,<0.12`).
   - Accepts a configurable model/pipeline id via `--pyannote-model` / `AlignmentOptions.pyannote_model`; the CLI rejects this option unless `--vad-strategy pyannote` is selected
   - Default is `pyannote/speaker-diarization-community-1`; diarization speaker labels are ignored and the union of speech regions becomes the VAD timeline. The legacy `pyannote/voice-activity-detection` pipeline remains available through `--pyannote-model pyannote/voice-activity-detection`.
   - Model identifiers beginning with `pyannote/segmentation` use the compatibility path originally added for pyannote.audio 3.x and still covered under the 4.x stack: `Model.from_pretrained(...)` plus `pyannote.audio.pipelines.VoiceActivityDetection`
@@ -163,9 +163,9 @@ Restricting search around expected positions reduces false matches and runtime.
 
 `fit_linear_drift_model()` fits:
 
-\[
-\text{master\_time} = \text{stretch\_ratio} \cdot \text{local\_time} + \text{offset\_seconds}
-\]
+$$
+\text{master\_time} = \text{stretch\_ratio} \cdot \text{local\_time}+ \text{offset\_seconds}
+$$
 
 Algorithm:
 

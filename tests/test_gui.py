@@ -152,7 +152,7 @@ def test_gui_displays_package_version_in_corner() -> None:
     _app()
     window = MainWindow(lang="en")
 
-    assert window.version_label.text() == "v0.2.6"
+    assert window.version_label.text() == "v0.2.7"
     assert window.version_label.alignment() & Qt.AlignRight
     assert window.version_label.alignment() & Qt.AlignBottom
 

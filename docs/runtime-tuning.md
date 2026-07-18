@@ -221,13 +221,17 @@ Use `pitch_preserving` only when you specifically need pitch-preserving output
 and have accepted the extra runtime cost.
 
 > **Note:** `pitch_preserving` requires `librosa`, which is not installed by
-> default. Install it with the `stretch` extra before using this method,
-> otherwise the tool will raise a runtime error that may look like an alignment
-> failure:
+> default and is no longer pulled in by the `stretch` extra (its transitive
+> `numba`/`llvmlite` dependency lags new Python releases). Install it directly
+> before using this method, otherwise the tool will raise a runtime error that
+> may look like an alignment failure:
 >
 > ```bash
-> pip install "double-ender-sync[stretch]"
+> pip install librosa
 > ```
+>
+> Prefer `--stretch-method rubberband` instead — it supersedes `pitch_preserving`
+> and is installed via the `stretch` extra (`pip install "double-ender-sync[stretch]"`).
 
 Also keep local adjustment disabled during runtime comparisons unless you are
 specifically validating local adjustment behavior:

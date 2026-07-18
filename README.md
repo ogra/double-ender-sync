@@ -155,10 +155,10 @@ Print the installed version from the CLI with either long or short version flags
 ```bash
 double-ender-sync --version
 double-ender-sync -V
-# version 0.2.6
+# version 0.2.7
 ```
 
-The same version is exposed to Python callers through the package/API (`double_ender_sync.__version__` and `double_ender_sync.api.get_version()` both return `0.2.6`) and is shown in the GUI footer as `v0.2.6`.
+The same version is exposed to Python callers through the package/API (`double_ender_sync.__version__` and `double_ender_sync.api.get_version()` both return `0.2.7`) and is shown in the GUI footer as `v0.2.7`.
 
 ## Quick start
 
@@ -231,7 +231,7 @@ See [docs/initial-offset-safety-net.md](docs/initial-offset-safety-net.md) for t
 - `--stretch-ratio-auto-continue`
   Skip interactive confirmation and continue even when stretch ratio warning threshold is exceeded.
 - `--stretch-method {resample,pitch_preserving,rubberband,soxr,audiostretchy}`
-  Global correction method. `resample` is default and now renders through the general monotonic time-mapping interface for future drift models while preserving the linear default/control behavior, including tracks whose original sample rate differs from the master sample rate. `pitch_preserving` uses librosa, prioritizes pitch stability for larger drift corrections, and currently supports only `LinearDrift`; unsupported renderer/model combinations fail clearly rather than silently producing audio.
+  Global correction method. `resample` is default and now renders through the general monotonic time-mapping interface for future drift models while preserving the linear default/control behavior, including tracks whose original sample rate differs from the master sample rate. `pitch_preserving` uses librosa, prioritizes pitch stability for larger drift corrections, and currently supports only `LinearDrift`; unsupported renderer/model combinations fail clearly rather than silently producing audio. `librosa` is no longer pulled in by the `[stretch]`/`[all]` extras (its transitive `numba`/`llvmlite` dependency lags new Python releases); install it manually with `pip install librosa` if you need this method, or prefer `rubberband` below, which supersedes it.
   `rubberband` uses the Rubber Band Library via `pyrubberband` for superior transient and formant preservation. Requires the `[stretch]` extra **and** the `rubberband` command-line executable on `PATH` (`apt install rubberband-cli` on Debian/Ubuntu, `brew install rubberband` on macOS) — `pyrubberband` is a wrapper around that binary.
   `soxr` uses libsoxr at VHQ quality (64-tap sinc) for alias-free resampling at small drift ratios. Requires the `[hq-resample]` extra only; no external binary is needed.
   `audiostretchy` implements Time Domain Harmonic Scaling (TDHS) for high-quality time-stretch that preserves pitch and supports 32-bit float audio. Requires the `[audiostretchy]` extra and a C compiler for building the extension. **Note:** `audiostretchy-f32` has been compatibility-tested on Python 3.11–3.13 only; Python 3.14 or later is not supported by this extra.
@@ -444,7 +444,7 @@ GUI features (current):
 When `--vad-strategy pyannote` is enabled, runtime loading depends on Torch waveform support and PyTorch checkpoint compatibility. The normal VAD path passes audio as an in-memory waveform, avoiding pyannote's file-decoding path that can emit torchaudio deprecation warnings during the PyTorch TorchCodec transition.
 
 - TorchCodec/FFmpeg native bindings may still be needed by pyannote itself or by user-selected pyannote pipelines that perform their own file decoding.
-- Keep `torch`, `torchaudio`, and `torchcodec` on a compatible set. The pyannote extra pins `torch==2.11.0` and `torchaudio==2.11.0`, so it also constrains TorchCodec to `>=0.11.1,<0.12`. If `pip` previously installed an incompatible TorchCodec, reinstall the extra or run `pip install --force-reinstall "torchcodec>=0.11.1,<0.12"`. A `Symbol not found` error from `libtorchcodec_core*.dylib` that references `torch/lib/libc10.dylib` usually points to this Torch/TorchCodec ABI mismatch rather than to the selected FFmpeg keg.
+- Keep `torch`, `torchaudio`, and `torchcodec` on a compatible set. The pyannote extra pins `torch==2.13.0` and `torchaudio==2.11.0`, so it also constrains TorchCodec to `>=0.11.1,<0.12`. If `pip` previously installed an incompatible TorchCodec, reinstall the extra or run `pip install --force-reinstall "torchcodec>=0.11.1,<0.12"`. A `Symbol not found` error from `libtorchcodec_core*.dylib` that references `torch/lib/libc10.dylib` usually points to this Torch/TorchCodec ABI mismatch rather than to the selected FFmpeg keg.
 - On **macOS**, Torch/Torio may try FFmpeg major versions in descending order and can fail on incompatible majors and succeed on 6.
 - Homebrew latest FFmpeg is currently 8.x, but that does not guarantee ABI compatibility with prebuilt Python extensions in your environment.
 - In that case, install `ffmpeg@6` in parallel and expose its library directory via `DYLD_LIBRARY_PATH`. If the error persists after FFmpeg 6 loads successfully, check the TorchCodec version compatibility before changing FFmpeg paths again.

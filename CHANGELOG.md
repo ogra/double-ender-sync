@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.7] - 2026-07-18
+
+### Changed
+
+- Updated `torch` to `2.13.0` (from `2.11.0`) in the `all` and `vad-pyannote` extras to address CVE-2025-3000.
+- Removed `librosa` from the `all` and `stretch` extras to stabilize installs: its transitive `numba`/`llvmlite` dependency lags new Python releases and was forcing dependency resolution onto an ancient, Python 3.14-incompatible `llvmlite` build. `--stretch-method pitch_preserving` still works if `librosa` is installed manually (`pip install librosa`); `rubberband` remains the maintained pitch-preserving alternative via the `stretch` extra.
+
 ## [0.2.6] - 2026-06-18
 
 ### Changed
